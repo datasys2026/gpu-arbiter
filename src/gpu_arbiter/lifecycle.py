@@ -17,7 +17,7 @@ class LifecycleRunner:
         if hook.type != "http":
             raise ValueError(f"unsupported hook type: {hook.type}")
         with httpx.Client(timeout=hook.timeout_seconds) as client:
-            response = client.request(hook.method, hook.url)
+            response = client.request(hook.method, hook.url, headers=hook.headers)
             response.raise_for_status()
 
     def wait_for_health(self, hook: HookConfig | None) -> None:
@@ -31,7 +31,7 @@ class LifecycleRunner:
         with httpx.Client(timeout=hook.timeout_seconds) as client:
             while time.monotonic() <= deadline:
                 try:
-                    response = client.request(hook.method, hook.url)
+                    response = client.request(hook.method, hook.url, headers=hook.headers)
                     if response.status_code < 500:
                         response.raise_for_status()
                         return

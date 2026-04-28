@@ -16,6 +16,22 @@ def test_lifecycle_runner_calls_http_hook():
 
 
 @respx.mock
+def test_lifecycle_runner_sends_hook_headers():
+    route = respx.post("http://image-api:8003/admin/unload").mock(return_value=Response(200))
+    runner = LifecycleRunner()
+
+    runner.run_hook(
+        HookConfig(
+            type="http",
+            url="http://image-api:8003/admin/unload",
+            headers={"Authorization": "Bearer test-key"},
+        )
+    )
+
+    assert route.calls.last.request.headers["Authorization"] == "Bearer test-key"
+
+
+@respx.mock
 def test_lifecycle_runner_waits_for_health_until_success():
     route = respx.get("http://image-api:8003/health").mock(
         side_effect=[Response(503), Response(200, json={"status": "ok"})]

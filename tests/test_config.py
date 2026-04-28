@@ -27,3 +27,26 @@ models:
     assert config.gpu.cooldown_seconds == 2
     assert config.models["aiark/z-image-turbo"].upstream == "http://image-api:8003"
     assert config.models["aiark/z-image-turbo"].required_vram_mb == 12000
+
+
+def test_load_config_expands_environment_variables(tmp_path, monkeypatch):
+    monkeypatch.setenv("IMAGE_API_KEY", "test-key")
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+models:
+  aiark/z-image-turbo:
+    route: /v1/images/generations
+    upstream: http://image-api:8003
+    unload:
+      url: http://image-api:8003/admin/unload
+      headers:
+        Authorization: Bearer ${IMAGE_API_KEY}
+""",
+    )
+
+    config = load_config(config_path)
+
+    unload = config.models["aiark/z-image-turbo"].unload
+    assert unload is not None
+    assert unload.headers["Authorization"] == "Bearer test-key"
