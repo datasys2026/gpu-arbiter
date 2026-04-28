@@ -1,0 +1,29 @@
+from gpu_arbiter.config import load_config
+
+
+def test_load_config_maps_models(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+gpu:
+  index: 0
+  cooldown_seconds: 2
+models:
+  aiark/z-image-turbo:
+    route: /v1/images/generations
+    upstream: http://image-api:8003
+    required_vram_mb: 12000
+    health:
+      url: http://image-api:8003/health
+    unload:
+      type: http
+      url: http://image-api:8003/admin/unload
+""",
+    )
+
+    config = load_config(config_path)
+
+    assert config.gpu.index == 0
+    assert config.gpu.cooldown_seconds == 2
+    assert config.models["aiark/z-image-turbo"].upstream == "http://image-api:8003"
+    assert config.models["aiark/z-image-turbo"].required_vram_mb == 12000

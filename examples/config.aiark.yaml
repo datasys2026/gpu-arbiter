@@ -1,0 +1,46 @@
+gpu:
+  index: 0
+  cooldown_seconds: 8
+
+models:
+  aiark/z-image-turbo:
+    route: /image/v1/images/generations
+    upstream: http://image-api:8003
+    required_vram_mb: 12000
+    health:
+      type: http
+      url: http://image-api:8003/health
+      method: GET
+    unload:
+      type: http
+      url: http://image-api:8003/admin/unload
+
+  aiark/qwen-image-2512-q4km:
+    route: /image/v1/images/generations
+    upstream: http://image-api:8003
+    required_vram_mb: 22000
+    health:
+      type: http
+      url: http://qwen-image-api:8004/health
+      method: GET
+
+  aiark/qwen3-tts-0.6b-customvoice:
+    route: /tts/v1/audio/speech
+    upstream: http://tts-api:8002
+    required_vram_mb: 8000
+    health:
+      type: http
+      url: http://tts-api:8002/health
+      method: GET
+    unload:
+      type: http
+      url: http://tts-api:8002/admin/unload
+
+  aiark/acestep-1.5:
+    route: /music/release_task
+    upstream: http://music-api:8005
+    required_vram_mb: 16000
+    health:
+      type: http
+      url: http://music-api:8005/health
+      method: GET

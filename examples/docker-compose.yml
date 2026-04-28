@@ -1,0 +1,12 @@
+services:
+  gpu-arbiter:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: gpu-arbiter:0.1.0
+    ports:
+      - "127.0.0.1:8090:8090"
+    volumes:
+      - ./config.aiark.yaml:/config/config.yaml:ro
+    gpus: all
+    command: ["--config", "/config/config.yaml", "--host", "0.0.0.0", "--port", "8090"]

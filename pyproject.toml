@@ -1,0 +1,35 @@
+[project]
+name = "gpu-arbiter"
+version = "0.1.0"
+description = "Lightweight GPU runtime arbiter for Docker Compose model services."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "httpx>=0.27",
+    "pydantic>=2.7",
+    "pyyaml>=6.0",
+    "uvicorn[standard]>=0.30",
+]
+
+[project.optional-dependencies]
+nvml = ["nvidia-ml-py>=12.560"]
+test = [
+    "pytest>=8.2",
+    "respx>=0.21",
+]
+
+[project.scripts]
+gpu-arbiter = "gpu_arbiter.main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
