@@ -11,9 +11,11 @@ models:
       type: http
       url: http://image-api:8003/health
       method: GET
+      wait_timeout_seconds: 180
     unload:
       type: http
       url: http://image-api:8003/admin/unload
+      timeout_seconds: 30
 
   aiark/qwen-image-2512-q4km:
     route: /image/v1/images/generations
@@ -23,6 +25,7 @@ models:
       type: http
       url: http://qwen-image-api:8004/health
       method: GET
+      wait_timeout_seconds: 180
 
   aiark/qwen3-tts-0.6b-customvoice:
     route: /tts/v1/audio/speech
@@ -32,9 +35,11 @@ models:
       type: http
       url: http://tts-api:8002/health
       method: GET
+      wait_timeout_seconds: 180
     unload:
       type: http
       url: http://tts-api:8002/admin/unload
+      timeout_seconds: 30
 
   aiark/acestep-1.5:
     route: /music/release_task
@@ -44,3 +49,4 @@ models:
       type: http
       url: http://music-api:8005/health
       method: GET
+      wait_timeout_seconds: 300

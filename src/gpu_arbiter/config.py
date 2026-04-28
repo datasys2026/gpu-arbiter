@@ -16,6 +16,7 @@ class HookConfig(BaseModel):
     url: str
     method: str = "POST"
     timeout_seconds: float = 30
+    wait_timeout_seconds: float = 120
 
 
 class ModelConfig(BaseModel):

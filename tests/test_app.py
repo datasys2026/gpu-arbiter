@@ -3,7 +3,7 @@ from fastapi.testclient import TestClient
 from httpx import Response
 
 from gpu_arbiter.app import create_app
-from gpu_arbiter.config import ArbiterConfig, GPUConfig, ModelConfig
+from gpu_arbiter.config import ArbiterConfig, GPUConfig, HookConfig, ModelConfig
 from gpu_arbiter.locking import InMemoryGPULock
 from gpu_arbiter.vram import StaticVRAMProbe
 
@@ -16,6 +16,22 @@ def _app(free_mb: int = 16000):
                 route="/v1/images/generations",
                 upstream="http://image-api:8003",
                 required_vram_mb=12000,
+            )
+        },
+    )
+    return create_app(config, gpu_lock=InMemoryGPULock(), vram_probe=StaticVRAMProbe(free_mb))
+
+
+def _app_with_hooks(free_mb: int = 16000):
+    config = ArbiterConfig(
+        gpu=GPUConfig(index=0),
+        models={
+            "aiark/z-image-turbo": ModelConfig(
+                route="/v1/images/generations",
+                upstream="http://image-api:8003",
+                required_vram_mb=12000,
+                unload=HookConfig(type="http", url="http://image-api:8003/admin/unload"),
+                health=HookConfig(type="http", url="http://image-api:8003/health", method="GET"),
             )
         },
     )
@@ -57,3 +73,28 @@ def test_proxy_returns_insufficient_vram():
 
     assert response.status_code == 503
     assert response.json()["error"]["type"] == "insufficient_vram"
+
+
+@respx.mock
+def test_proxy_unloads_and_waits_for_health_before_upstream_request():
+    calls = []
+
+    def record(name):
+        def _handler(request):
+            calls.append(name)
+            return Response(200, json={"ok": True})
+
+        return _handler
+
+    respx.post("http://image-api:8003/admin/unload").mock(side_effect=record("unload"))
+    respx.get("http://image-api:8003/health").mock(side_effect=record("health"))
+    respx.post("http://image-api:8003/v1/images/generations").mock(side_effect=record("proxy"))
+    client = TestClient(_app_with_hooks())
+
+    response = client.post(
+        "/v1/images/generations",
+        json={"model": "aiark/z-image-turbo", "prompt": "a robot"},
+    )
+
+    assert response.status_code == 200
+    assert calls == ["unload", "health", "proxy"]

@@ -13,3 +13,15 @@ def test_lifecycle_runner_calls_http_hook():
     runner.run_hook(HookConfig(type="http", url="http://image-api:8003/admin/unload"))
 
     assert route.called
+
+
+@respx.mock
+def test_lifecycle_runner_waits_for_health_until_success():
+    route = respx.get("http://image-api:8003/health").mock(
+        side_effect=[Response(503), Response(200, json={"status": "ok"})]
+    )
+    runner = LifecycleRunner(poll_interval_seconds=0)
+
+    runner.wait_for_health(HookConfig(type="http", url="http://image-api:8003/health", method="GET"))
+
+    assert route.call_count == 2

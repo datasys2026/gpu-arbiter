@@ -63,9 +63,10 @@ def create_app(
             )
 
         try:
-            probe.ensure_available(model.required_vram_mb)
             with lock.acquire(model_id or route):
                 lifecycle.run_hook(model.unload)
+                lifecycle.wait_for_health(model.health)
+                probe.ensure_available(model.required_vram_mb)
                 response = await _proxy_request(model, route, request, body)
                 if config.gpu.cooldown_seconds:
                     time.sleep(config.gpu.cooldown_seconds)
