@@ -25,6 +25,7 @@ class HookConfig(BaseModel):
 class ModelConfig(BaseModel):
     route: str
     upstream: str
+    uses_gpu: bool = True
     required_vram_mb: int = Field(default=0, ge=0)
     health: HookConfig | None = None
     unload: HookConfig | None = None

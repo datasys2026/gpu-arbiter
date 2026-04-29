@@ -76,6 +76,33 @@ def test_proxy_returns_insufficient_vram():
 
 
 @respx.mock
+def test_non_gpu_route_does_not_take_gpu_lock_or_check_vram():
+    config = ArbiterConfig(
+        gpu=GPUConfig(index=0, cooldown_seconds=99),
+        models={
+            "aiark/litellm-models": ModelConfig(
+                route="/v1/models",
+                upstream="http://litellm:4000",
+                uses_gpu=False,
+                required_vram_mb=0,
+            )
+        },
+    )
+    respx.get("http://litellm:4000/v1/models").mock(
+        return_value=Response(200, json={"data": []})
+    )
+    client = TestClient(
+        create_app(config, gpu_lock=InMemoryGPULock(), vram_probe=StaticVRAMProbe(0))
+    )
+
+    first = client.get("/v1/models")
+    second = client.get("/v1/models")
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+
+
+@respx.mock
 def test_proxy_unloads_and_waits_for_health_before_upstream_request():
     calls = []
 

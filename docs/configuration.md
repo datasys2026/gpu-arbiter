@@ -12,6 +12,7 @@ Configuration is loaded from YAML.
 
 - `route`: public route handled by the arbiter
 - `upstream`: upstream base URL
+- `uses_gpu`: whether the request should use GPU lock / VRAM preflight; defaults to `true`
 - `required_vram_mb`: minimum free VRAM required before the request starts
 - `health`: optional HTTP hook checked before proxying
 - `unload`: optional HTTP hook called before loading or forwarding a request
@@ -24,4 +25,3 @@ String values in the YAML file support environment variable expansion via `${NAM
 
 - [`examples/config.example.yaml`](../examples/config.example.yaml)
 - [`examples/config.aiark.yaml`](../examples/config.aiark.yaml)
-

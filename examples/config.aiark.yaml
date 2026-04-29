@@ -3,6 +3,27 @@ gpu:
   cooldown_seconds: 8
 
 models:
+  aiark/litellm-models:
+    route: /v1/models
+    upstream: http://litellm:4000
+    uses_gpu: false
+    required_vram_mb: 0
+    health:
+      type: http
+      url: http://litellm:4000/health/liveliness
+      method: GET
+      wait_timeout_seconds: 60
+
+  aiark/gemma4-e2b:
+    route: /v1/chat/completions
+    upstream: http://litellm:4000
+    required_vram_mb: 6000
+    health:
+      type: http
+      url: http://litellm:4000/health/liveliness
+      method: GET
+      wait_timeout_seconds: 60
+
   aiark/z-image-turbo:
     route: /image/v1/images/generations
     upstream: http://image-api:8003

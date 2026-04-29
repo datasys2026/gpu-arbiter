@@ -3,6 +3,17 @@ gpu:
   cooldown_seconds: 2
 
 models:
+  local/model-list:
+    route: /v1/models
+    upstream: http://litellm:4000
+    uses_gpu: false
+    required_vram_mb: 0
+    health:
+      type: http
+      url: http://litellm:4000/health/liveliness
+      method: GET
+      wait_timeout_seconds: 60
+
   local/z-image-turbo:
     route: /v1/images/generations
     upstream: http://image-api:8003

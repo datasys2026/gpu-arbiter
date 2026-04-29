@@ -12,6 +12,7 @@
 
 - `route`：arbiter 對外處理的路由
 - `upstream`：upstream base URL
+- `uses_gpu`：是否需要進入 GPU lock / VRAM preflight；預設為 `true`
 - `required_vram_mb`：請求開始前要求的最小 free VRAM
 - `health`：可選的 HTTP hook，請求前先檢查
 - `unload`：可選的 HTTP hook，請求前或轉發前先執行
@@ -24,4 +25,3 @@ YAML 中的字串支援 `${NAME}` 形式的環境變數展開。
 
 - [examples/config.example.yaml](../examples/config.example.yaml)
 - [examples/config.aiark.yaml](../examples/config.aiark.yaml)
-

@@ -62,6 +62,21 @@ def create_app(
                 ),
             )
 
+        if not model.uses_gpu:
+            try:
+                lifecycle.wait_for_health(model.health)
+                return await _proxy_request(model, route, request, body)
+            except httpx.HTTPStatusError as exc:
+                return JSONResponse(
+                    status_code=502,
+                    content=error_payload(
+                        "upstream_error",
+                        "Upstream service returned an error",
+                        True,
+                        upstream_status_code=exc.response.status_code,
+                    ),
+                )
+
         try:
             with lock.acquire(model_id or route):
                 lifecycle.run_hook(model.unload)
