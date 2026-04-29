@@ -4,6 +4,11 @@ GPU Arbiter is a lightweight runtime controller for single-machine Docker Compos
 It serializes heavy GPU jobs, checks available VRAM, runs lifecycle hooks, proxies requests to
 existing model services, and returns clear retryable errors.
 
+## Languages
+
+- English: this file
+- Traditional Chinese: [README.zh-TW.md](./README.zh-TW.md)
+
 It is not a replacement for LiteLLM, Triton, KServe, or GPUStack. The target is a single
 3090/4090-class machine running a few heterogeneous local services such as image, speech,
 and music generation backends.
@@ -56,6 +61,7 @@ your own deployment. For the internal AIARK deployment sample, see
 - [Routing](./docs/routing.md)
 - [Error Codes](./docs/errors.md)
 - [Compatibility](./docs/compatibility.md)
+- Traditional Chinese docs index: [docs/index.zh-TW.md](./docs/index.zh-TW.md)
 
 ## Why this repo exists
 
