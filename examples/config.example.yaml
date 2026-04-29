@@ -1,0 +1,42 @@
+gpu:
+  index: 0
+  cooldown_seconds: 2
+
+models:
+  local/z-image-turbo:
+    route: /v1/images/generations
+    upstream: http://image-api:8003
+    required_vram_mb: 12000
+    health:
+      type: http
+      url: http://image-api:8003/health
+      method: GET
+      wait_timeout_seconds: 180
+    unload:
+      type: http
+      url: http://image-api:8003/admin/unload
+      timeout_seconds: 30
+
+  local/qwen3-tts:
+    route: /v1/audio/speech
+    upstream: http://tts-api:8002
+    required_vram_mb: 8000
+    health:
+      type: http
+      url: http://tts-api:8002/health
+      method: GET
+      wait_timeout_seconds: 180
+    unload:
+      type: http
+      url: http://tts-api:8002/admin/unload
+      timeout_seconds: 30
+
+  local/acestep:
+    route: /release_task
+    upstream: http://music-api:8005
+    required_vram_mb: 16000
+    health:
+      type: http
+      url: http://music-api:8005/health
+      method: GET
+      wait_timeout_seconds: 300
