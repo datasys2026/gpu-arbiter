@@ -17,8 +17,22 @@ class LifecycleRunner:
         if hook.type != "http":
             raise ValueError(f"unsupported hook type: {hook.type}")
         with httpx.Client(timeout=hook.timeout_seconds) as client:
-            response = client.request(hook.method, hook.url, headers=hook.headers)
+            response = client.request(
+                hook.method,
+                hook.url,
+                headers=hook.headers,
+                json=hook.body_json,
+            )
             response.raise_for_status()
+
+    def run_hooks(self, hooks: HookConfig | list[HookConfig] | None) -> None:
+        if hooks is None:
+            return
+        if isinstance(hooks, HookConfig):
+            self.run_hook(hooks)
+            return
+        for hook in hooks:
+            self.run_hook(hook)
 
     def wait_for_health(self, hook: HookConfig | None) -> None:
         if hook is None:

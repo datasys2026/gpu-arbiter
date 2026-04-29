@@ -17,7 +17,7 @@ models:
   aiark/gemma4-e2b:
     route: /v1/chat/completions
     upstream: http://litellm:4000
-    required_vram_mb: 6000
+    required_vram_mb: 0
     health:
       type: http
       url: http://litellm:4000/health/liveliness

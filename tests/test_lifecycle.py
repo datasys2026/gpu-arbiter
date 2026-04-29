@@ -32,6 +32,47 @@ def test_lifecycle_runner_sends_hook_headers():
 
 
 @respx.mock
+def test_lifecycle_runner_sends_json_body():
+    route = respx.post("http://ollama:11434/api/generate").mock(return_value=Response(200))
+    runner = LifecycleRunner()
+
+    runner.run_hook(
+        HookConfig(
+            type="http",
+            url="http://ollama:11434/api/generate",
+            body_json={"model": "gemma4:e2b", "keep_alive": 0},
+        )
+    )
+
+    assert route.calls.last.request.content == b'{"model":"gemma4:e2b","keep_alive":0}'
+
+
+@respx.mock
+def test_lifecycle_runner_runs_multiple_hooks_in_order():
+    calls = []
+
+    def record(name):
+        def _handler(request):
+            calls.append(name)
+            return Response(200)
+
+        return _handler
+
+    respx.post("http://ollama:11434/api/generate").mock(side_effect=record("ollama"))
+    respx.post("http://image-api:8003/admin/unload").mock(side_effect=record("image"))
+    runner = LifecycleRunner()
+
+    runner.run_hooks(
+        [
+            HookConfig(type="http", url="http://ollama:11434/api/generate"),
+            HookConfig(type="http", url="http://image-api:8003/admin/unload"),
+        ]
+    )
+
+    assert calls == ["ollama", "image"]
+
+
+@respx.mock
 def test_lifecycle_runner_waits_for_health_until_success():
     route = respx.get("http://image-api:8003/health").mock(
         side_effect=[Response(503), Response(200, json={"status": "ok"})]

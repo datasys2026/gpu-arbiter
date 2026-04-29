@@ -50,3 +50,28 @@ models:
     unload = config.models["aiark/z-image-turbo"].unload
     assert unload is not None
     assert unload.headers["Authorization"] == "Bearer test-key"
+
+
+def test_load_config_accepts_multiple_unload_hooks_with_json_body(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+models:
+  aiark/z-image-turbo:
+    route: /v1/images/generations
+    upstream: http://image-api:8003
+    unload:
+      - url: http://ollama:11434/api/generate
+        body_json:
+          model: gemma4:e2b
+          keep_alive: 0
+      - url: http://image-api:8003/admin/unload
+""",
+    )
+
+    config = load_config(config_path)
+
+    unload = config.models["aiark/z-image-turbo"].unload
+    assert isinstance(unload, list)
+    assert unload[0].body_json == {"model": "gemma4:e2b", "keep_alive": 0}
+    assert unload[1].url == "http://image-api:8003/admin/unload"

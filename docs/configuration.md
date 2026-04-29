@@ -15,7 +15,14 @@ Configuration is loaded from YAML.
 - `uses_gpu`: whether the request should use GPU lock / VRAM preflight; defaults to `true`
 - `required_vram_mb`: minimum free VRAM required before the request starts
 - `health`: optional HTTP hook checked before proxying
-- `unload`: optional HTTP hook called before loading or forwarding a request
+- `unload`: optional HTTP hook or hook list called before loading or forwarding a request
+
+## Hook keys
+
+- `url`: HTTP hook URL
+- `method`: HTTP method, defaults to `POST`
+- `headers`: optional HTTP headers
+- `body_json`: optional JSON body, useful for unload requests such as Ollama `keep_alive: 0`
 
 ## Environment variables
 
