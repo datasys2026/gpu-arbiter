@@ -1,7 +1,8 @@
 [project]
 name = "gpu-arbiter"
 version = "0.1.0"
-description = "Lightweight GPU runtime arbiter for Docker Compose model services."
+description = "單機 Docker Compose AI 堆疊的輕量級 GPU 控制平面。"
+keywords = ["gpu", "arbiter", "docker-compose", "fastapi", "nvml", "ai"]
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -21,6 +22,10 @@ test = [
 
 [project.scripts]
 gpu-arbiter = "gpu_arbiter.main:main"
+
+[project.urls]
+Repository = "https://github.com/datasys2026/gpu-arbiter"
+Issues = "https://github.com/datasys2026/gpu-arbiter/issues"
 
 [build-system]
 requires = ["hatchling"]
