@@ -73,6 +73,23 @@ def test_lifecycle_runner_runs_multiple_hooks_in_order():
 
 
 @respx.mock
+def test_lifecycle_runner_can_ignore_hook_errors():
+    respx.post("http://image-api:8003/admin/unload").mock(return_value=Response(404))
+    route = respx.post("http://ollama:11434/api/generate").mock(return_value=Response(200))
+    runner = LifecycleRunner()
+
+    runner.run_hooks(
+        [
+            HookConfig(type="http", url="http://image-api:8003/admin/unload"),
+            HookConfig(type="http", url="http://ollama:11434/api/generate"),
+        ],
+        ignore_errors=True,
+    )
+
+    assert route.called
+
+
+@respx.mock
 def test_lifecycle_runner_waits_for_health_until_success():
     route = respx.get("http://image-api:8003/health").mock(
         side_effect=[Response(503), Response(200, json={"status": "ok"})]

@@ -25,14 +25,22 @@ class LifecycleRunner:
             )
             response.raise_for_status()
 
-    def run_hooks(self, hooks: HookConfig | list[HookConfig] | None) -> None:
+    def run_hooks(self, hooks: HookConfig | list[HookConfig] | None, *, ignore_errors: bool = False) -> None:
         if hooks is None:
             return
         if isinstance(hooks, HookConfig):
-            self.run_hook(hooks)
+            try:
+                self.run_hook(hooks)
+            except httpx.HTTPError:
+                if not ignore_errors:
+                    raise
             return
         for hook in hooks:
-            self.run_hook(hook)
+            try:
+                self.run_hook(hook)
+            except httpx.HTTPError:
+                if not ignore_errors:
+                    raise
 
     def wait_for_health(self, hook: HookConfig | None) -> None:
         if hook is None:

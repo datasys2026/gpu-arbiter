@@ -41,7 +41,7 @@ def create_app(
     @app.post("/admin/unload")
     def unload_all() -> dict:
         for model in config.models.values():
-            lifecycle.run_hooks(model.unload)
+            lifecycle.run_hooks(model.unload, ignore_errors=True)
         return {"status": "ok"}
 
     @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
@@ -79,7 +79,7 @@ def create_app(
 
         try:
             with lock.acquire(model_id or route):
-                lifecycle.run_hooks(model.unload)
+                lifecycle.run_hooks(model.unload, ignore_errors=True)
                 lifecycle.wait_for_health(model.health)
                 probe.ensure_available(model.required_vram_mb)
                 response = await _proxy_request(model, route, request, body)

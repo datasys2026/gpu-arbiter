@@ -125,3 +125,21 @@ def test_proxy_unloads_and_waits_for_health_before_upstream_request():
 
     assert response.status_code == 200
     assert calls == ["unload", "health", "proxy"]
+
+
+@respx.mock
+def test_proxy_ignores_missing_unload_hooks():
+    respx.post("http://image-api:8003/admin/unload").mock(return_value=Response(404))
+    respx.get("http://image-api:8003/health").mock(return_value=Response(200))
+    respx.post("http://image-api:8003/v1/images/generations").mock(
+        return_value=Response(200, json={"ok": True})
+    )
+    client = TestClient(_app_with_hooks())
+
+    response = client.post(
+        "/v1/images/generations",
+        json={"model": "aiark/z-image-turbo", "prompt": "a robot"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
