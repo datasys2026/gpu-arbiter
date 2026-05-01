@@ -143,3 +143,24 @@ def test_proxy_ignores_missing_unload_hooks():
 
     assert response.status_code == 200
     assert response.json() == {"ok": True}
+
+
+def test_admin_unload_is_blocked_by_gpu_lock():
+    lock = InMemoryGPULock()
+    config = ArbiterConfig(
+        gpu=GPUConfig(index=0),
+        models={
+            "aiark/z-image-turbo": ModelConfig(
+                route="/v1/images/generations",
+                upstream="http://image-api:8003",
+                unload=HookConfig(type="http", url="http://image-api:8003/admin/unload"),
+            )
+        },
+    )
+    client = TestClient(create_app(config, gpu_lock=lock, vram_probe=StaticVRAMProbe(16000)))
+
+    with lock.acquire("image-api"):
+        response = client.post("/admin/unload")
+
+    assert response.status_code == 409
+    assert response.json()["error"]["type"] == "gpu_busy"

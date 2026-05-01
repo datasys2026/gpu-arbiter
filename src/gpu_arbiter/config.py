@@ -2,28 +2,36 @@ from __future__ import annotations
 
 import os
 import pathlib
+from collections import Counter
 from typing import Any
+from typing import Literal
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class GPUConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     index: int = 0
     cooldown_seconds: float = 0
 
 
 class HookConfig(BaseModel):
-    type: str = "http"
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["http"] = "http"
     url: str
     method: str = "POST"
     headers: dict[str, str] = Field(default_factory=dict)
     body_json: Any | None = None
-    timeout_seconds: float = 30
-    wait_timeout_seconds: float = 120
+    timeout_seconds: float = Field(default=30, gt=0)
+    wait_timeout_seconds: float = Field(default=120, gt=0)
 
 
 class ModelConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     route: str
     upstream: str
     uses_gpu: bool = True
@@ -33,6 +41,8 @@ class ModelConfig(BaseModel):
 
 
 class ArbiterConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     gpu: GPUConfig = Field(default_factory=GPUConfig)
     models: dict[str, ModelConfig]
 
@@ -50,4 +60,9 @@ def _expand_environment(value: Any) -> Any:
 def load_config(path: str | pathlib.Path) -> ArbiterConfig:
     raw = yaml.safe_load(pathlib.Path(path).read_text()) or {}
     raw = _expand_environment(raw)
-    return ArbiterConfig.model_validate(raw)
+    config = ArbiterConfig.model_validate(raw)
+    routes = [model.route for model in config.models.values()]
+    duplicates = [route for route, count in Counter(routes).items() if count > 1]
+    if duplicates:
+        raise ValueError(f"duplicate model routes are not allowed: {', '.join(sorted(duplicates))}")
+    return config

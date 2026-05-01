@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+import logging
+import uuid
 import time
 
 import httpx
@@ -13,6 +16,17 @@ from gpu_arbiter.locking import GPUBusyError, InMemoryGPULock
 from gpu_arbiter.vram import InsufficientVRAMError, StaticVRAMProbe
 
 
+LOGGER = logging.getLogger("gpu_arbiter")
+
+
+def _log_event(event: str, **fields: object) -> None:
+    LOGGER.info(json.dumps({"event": event, **fields}, ensure_ascii=False, default=str))
+
+
+def _request_id(request: Request) -> str:
+    return request.headers.get("x-request-id") or uuid.uuid4().hex
+
+
 def create_app(
     config: ArbiterConfig,
     *,
@@ -23,7 +37,7 @@ def create_app(
     app = FastAPI(title="GPU Arbiter")
     lock = gpu_lock or InMemoryGPULock()
     probe = vram_probe or StaticVRAMProbe(free_mb=10**9)
-    lifecycle = lifecycle_runner or LifecycleRunner()
+    lifecycle = lifecycle_runner or LifecycleRunner(logger=LOGGER)
 
     @app.get("/health")
     def health() -> dict:
@@ -39,18 +53,45 @@ def create_app(
         return {"data": [{"id": model_id} for model_id in sorted(config.models)]}
 
     @app.post("/admin/unload")
-    def unload_all() -> dict:
-        for model in config.models.values():
-            lifecycle.run_hooks(model.unload, ignore_errors=True)
-        return {"status": "ok"}
+    def unload_all(request: Request, force: bool = False) -> Response:
+        request_id = _request_id(request)
+        _log_event("admin_unload_start", request_id=request_id, force=force, holder=lock.holder)
+        try:
+            with lock.acquire("admin-unload"):
+                for model_id, model in config.models.items():
+                    _log_event("admin_unload_hook_start", request_id=request_id, model_id=model_id)
+                    lifecycle.run_hooks(model.unload, ignore_errors=True)
+                    _log_event("admin_unload_hook_done", request_id=request_id, model_id=model_id)
+                _log_event("admin_unload_done", request_id=request_id)
+                return JSONResponse({"status": "ok"})
+        except GPUBusyError as exc:
+            _log_event("admin_unload_busy", request_id=request_id, holder=exc.holder, force=force)
+            return JSONResponse(
+                status_code=409,
+                content=error_payload(
+                    "gpu_busy",
+                    "GPU is occupied by another generation job",
+                    True,
+                    holder=exc.holder,
+                ),
+            )
 
     @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
     async def proxy(path: str, request: Request) -> Response:
+        request_id = _request_id(request)
         route = "/" + path
         body = await request.body()
         model_id = _extract_model_id(request, body)
         model = _resolve_model(config, route, model_id)
+        _log_event(
+            "request_received",
+            request_id=request_id,
+            route=route,
+            method=request.method,
+            model_id=model_id,
+        )
         if model is None:
+            _log_event("request_route_missing", request_id=request_id, route=route, model_id=model_id)
             return JSONResponse(
                 status_code=404,
                 content=error_payload(
@@ -65,8 +106,24 @@ def create_app(
         if not model.uses_gpu:
             try:
                 lifecycle.wait_for_health(model.health)
-                return await _proxy_request(model, route, request, body)
+                response = await _proxy_request(model, route, request, body)
+                _log_event(
+                    "request_completed",
+                    request_id=request_id,
+                    route=route,
+                    model_id=model_id or route,
+                    status_code=response.status_code,
+                    uses_gpu=False,
+                )
+                return response
             except httpx.HTTPStatusError as exc:
+                _log_event(
+                    "request_upstream_error",
+                    request_id=request_id,
+                    route=route,
+                    model_id=model_id or route,
+                    upstream_status_code=exc.response.status_code,
+                )
                 return JSONResponse(
                     status_code=502,
                     content=error_payload(
@@ -78,15 +135,27 @@ def create_app(
                 )
 
         try:
-            with lock.acquire(model_id or route):
+            holder = model_id or route
+            _log_event("gpu_lock_acquire_attempt", request_id=request_id, holder=holder)
+            with lock.acquire(holder):
+                _log_event("gpu_lock_acquired", request_id=request_id, holder=holder)
                 lifecycle.run_hooks(model.unload, ignore_errors=True)
                 lifecycle.wait_for_health(model.health)
                 probe.ensure_available(model.required_vram_mb)
                 response = await _proxy_request(model, route, request, body)
                 if config.gpu.cooldown_seconds:
                     time.sleep(config.gpu.cooldown_seconds)
+                _log_event(
+                    "request_completed",
+                    request_id=request_id,
+                    route=route,
+                    model_id=holder,
+                    status_code=response.status_code,
+                    uses_gpu=True,
+                )
                 return response
         except GPUBusyError as exc:
+            _log_event("gpu_busy", request_id=request_id, route=route, model_id=model_id, holder=exc.holder)
             return JSONResponse(
                 status_code=409,
                 content=error_payload(
@@ -97,6 +166,14 @@ def create_app(
                 ),
             )
         except InsufficientVRAMError as exc:
+            _log_event(
+                "insufficient_vram",
+                request_id=request_id,
+                route=route,
+                model_id=model_id,
+                free_mb=exc.free_mb,
+                required_mb=exc.required_mb,
+            )
             return JSONResponse(
                 status_code=503,
                 content=error_payload(
@@ -108,6 +185,13 @@ def create_app(
                 ),
             )
         except httpx.HTTPStatusError as exc:
+            _log_event(
+                "request_upstream_error",
+                request_id=request_id,
+                route=route,
+                model_id=model_id,
+                upstream_status_code=exc.response.status_code,
+            )
             return JSONResponse(
                 status_code=502,
                 content=error_payload(
