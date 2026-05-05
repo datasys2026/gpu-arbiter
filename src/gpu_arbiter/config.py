@@ -65,6 +65,7 @@ def _expand_environment(value: Any) -> Any:
 
 def load_config(path: str | pathlib.Path) -> ArbiterConfig:
     raw = yaml.safe_load(pathlib.Path(path).read_text()) or {}
+    raw = {k: v for k, v in raw.items() if not k.startswith("x-")}
     raw = _expand_environment(raw)
     config = ArbiterConfig.model_validate(raw)
     routes = [model.route for model in config.models.values()]
