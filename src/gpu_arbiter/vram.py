@@ -10,10 +10,10 @@ class InsufficientVRAMError(RuntimeError):
 
 class StaticVRAMProbe:
     def __init__(self, free_mb: int) -> None:
-        self.free_mb = free_mb
+        self._free_mb = free_mb
 
     def get_free_mb(self) -> int:
-        return self.free_mb
+        return self._free_mb
 
     def ensure_available(self, required_mb: int) -> None:
         free_mb = self.get_free_mb()
@@ -39,3 +39,6 @@ class NVMLVRAMProbe:
         free_mb = self.get_free_mb()
         if free_mb < required_mb:
             raise InsufficientVRAMError(free_mb=free_mb, required_mb=required_mb)
+
+    def close(self) -> None:
+        self._pynvml.nvmlShutdown()

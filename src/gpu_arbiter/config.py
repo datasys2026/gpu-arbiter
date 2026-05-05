@@ -7,7 +7,7 @@ from typing import Any
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class GPUConfig(BaseModel):
@@ -45,6 +45,12 @@ class ArbiterConfig(BaseModel):
 
     gpu: GPUConfig = Field(default_factory=GPUConfig)
     models: dict[str, ModelConfig]
+
+    @model_validator(mode="after")
+    def _check_models_not_empty(self) -> "ArbiterConfig":
+        if not self.models:
+            raise ValueError("models dict must not be empty")
+        return self
 
 
 def _expand_environment(value: Any) -> Any:

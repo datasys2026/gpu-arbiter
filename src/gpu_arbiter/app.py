@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import uuid
-import time
 
 import httpx
 from fastapi import FastAPI, Request
@@ -24,7 +24,11 @@ def _log_event(event: str, **fields: object) -> None:
 
 
 def _request_id(request: Request) -> str:
-    return request.headers.get("x-request-id") or uuid.uuid4().hex
+    rid = request.headers.get("x-request-id")
+    if rid:
+        rid = "".join(c for c in rid if c.isprintable() and ord(c) < 128)[:64]
+        return rid or uuid.uuid4().hex
+    return uuid.uuid4().hex
 
 
 def create_app(
@@ -36,7 +40,7 @@ def create_app(
 ) -> FastAPI:
     app = FastAPI(title="GPU Arbiter")
     lock = gpu_lock or InMemoryGPULock()
-    probe = vram_probe or StaticVRAMProbe(free_mb=10**9)
+    probe = vram_probe or StaticVRAMProbe(free_mb=0)
     lifecycle = lifecycle_runner or LifecycleRunner(logger=LOGGER)
 
     @app.get("/health")
@@ -53,19 +57,19 @@ def create_app(
         return {"data": [{"id": model_id} for model_id in sorted(config.models)]}
 
     @app.post("/admin/unload")
-    def unload_all(request: Request, force: bool = False) -> Response:
+    async def unload_all(request: Request) -> Response:
         request_id = _request_id(request)
-        _log_event("admin_unload_start", request_id=request_id, force=force, holder=lock.holder)
+        _log_event("admin_unload_start", request_id=request_id, holder=lock.holder)
         try:
             with lock.acquire("admin-unload"):
                 for model_id, model in config.models.items():
                     _log_event("admin_unload_hook_start", request_id=request_id, model_id=model_id)
-                    lifecycle.run_hooks(model.unload, ignore_errors=True)
+                    await lifecycle.run_hooks(model.unload, ignore_errors=True)
                     _log_event("admin_unload_hook_done", request_id=request_id, model_id=model_id)
                 _log_event("admin_unload_done", request_id=request_id)
                 return JSONResponse({"status": "ok"})
         except GPUBusyError as exc:
-            _log_event("admin_unload_busy", request_id=request_id, holder=exc.holder, force=force)
+            _log_event("admin_unload_busy", request_id=request_id, holder=exc.holder)
             return JSONResponse(
                 status_code=409,
                 content=error_payload(
@@ -105,7 +109,7 @@ def create_app(
 
         if not model.uses_gpu:
             try:
-                lifecycle.wait_for_health(model.health)
+                await lifecycle.wait_for_health(model.health)
                 response = await _proxy_request(model, route, request, body)
                 _log_event(
                     "request_completed",
@@ -116,13 +120,13 @@ def create_app(
                     uses_gpu=False,
                 )
                 return response
-            except httpx.HTTPStatusError as exc:
+            except httpx.HTTPError as exc:
                 _log_event(
                     "request_upstream_error",
                     request_id=request_id,
                     route=route,
                     model_id=model_id or route,
-                    upstream_status_code=exc.response.status_code,
+                    error=str(exc),
                 )
                 return JSONResponse(
                     status_code=502,
@@ -130,21 +134,23 @@ def create_app(
                         "upstream_error",
                         "Upstream service returned an error",
                         True,
-                        upstream_status_code=exc.response.status_code,
                     ),
                 )
+            except TimeoutError as exc:
+                _log_event("health_timeout", request_id=request_id, route=route, model_id=model_id, error=str(exc))
+                return JSONResponse(status_code=503, content=error_payload("health_timeout", "Model health check timed out", True))
 
         try:
             holder = model_id or route
             _log_event("gpu_lock_acquire_attempt", request_id=request_id, holder=holder)
             with lock.acquire(holder):
                 _log_event("gpu_lock_acquired", request_id=request_id, holder=holder)
-                lifecycle.run_hooks(model.unload, ignore_errors=True)
-                lifecycle.wait_for_health(model.health)
+                await lifecycle.run_hooks(model.unload, ignore_errors=True)
+                await lifecycle.wait_for_health(model.health)
                 probe.ensure_available(model.required_vram_mb)
                 response = await _proxy_request(model, route, request, body)
                 if config.gpu.cooldown_seconds:
-                    time.sleep(config.gpu.cooldown_seconds)
+                    await asyncio.sleep(config.gpu.cooldown_seconds)
                 _log_event(
                     "request_completed",
                     request_id=request_id,
@@ -184,13 +190,13 @@ def create_app(
                     required_mb=exc.required_mb,
                 ),
             )
-        except httpx.HTTPStatusError as exc:
+        except httpx.HTTPError as exc:
             _log_event(
                 "request_upstream_error",
                 request_id=request_id,
                 route=route,
                 model_id=model_id,
-                upstream_status_code=exc.response.status_code,
+                error=str(exc),
             )
             return JSONResponse(
                 status_code=502,
@@ -198,9 +204,11 @@ def create_app(
                     "upstream_error",
                     "Upstream service returned an error",
                     True,
-                    upstream_status_code=exc.response.status_code,
                 ),
             )
+        except TimeoutError as exc:
+            _log_event("health_timeout", request_id=request_id, route=route, model_id=model_id, error=str(exc))
+            return JSONResponse(status_code=503, content=error_payload("health_timeout", "Model health check timed out", True))
 
     return app
 
@@ -210,8 +218,6 @@ def _extract_model_id(request: Request, body: bytes) -> str | None:
     if "application/json" not in content_type or not body:
         return None
     try:
-        import json
-
         payload = json.loads(body)
     except Exception:
         return None
@@ -244,8 +250,11 @@ async def _proxy_request(model: ModelConfig, route: str, request: Request, body:
             params=request.query_params,
         )
     media_type = upstream_response.headers.get("content-type")
+    excluded = {"transfer-encoding", "connection", "content-encoding", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailers", "upgrade"}
+    fwd_headers = {k: v for k, v in upstream_response.headers.items() if k.lower() not in excluded}
     return Response(
         content=upstream_response.content,
         status_code=upstream_response.status_code,
+        headers=fwd_headers,
         media_type=media_type,
     )
