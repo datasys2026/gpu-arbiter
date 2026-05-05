@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import pathlib
-from collections import Counter
 from typing import Any
 from typing import Literal
 
@@ -67,9 +66,4 @@ def load_config(path: str | pathlib.Path) -> ArbiterConfig:
     raw = yaml.safe_load(pathlib.Path(path).read_text()) or {}
     raw = {k: v for k, v in raw.items() if not k.startswith("x-")}
     raw = _expand_environment(raw)
-    config = ArbiterConfig.model_validate(raw)
-    routes = [model.route for model in config.models.values()]
-    duplicates = [route for route, count in Counter(routes).items() if count > 1]
-    if duplicates:
-        raise ValueError(f"duplicate model routes are not allowed: {', '.join(sorted(duplicates))}")
-    return config
+    return ArbiterConfig.model_validate(raw)

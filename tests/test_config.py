@@ -77,21 +77,3 @@ models:
     assert isinstance(unload, list)
     assert unload[0].body_json == {"model": "gemma4:e2b", "keep_alive": 0}
     assert unload[1].url == "http://image-api:8003/admin/unload"
-
-
-def test_load_config_rejects_duplicate_routes(tmp_path):
-    config_path = tmp_path / "config.yaml"
-    config_path.write_text(
-        """
-models:
-  aiark/z-image-turbo:
-    route: /v1/images/generations
-    upstream: http://image-api:8003
-  aiark/qwen-image-turbo:
-    route: /v1/images/generations
-    upstream: http://qwen-image-api:8004
-""",
-    )
-
-    with pytest.raises(ValueError, match="duplicate model routes"):
-        load_config(config_path)
