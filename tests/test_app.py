@@ -31,7 +31,6 @@ def _app_with_hooks(free_mb: int = 16000):
                 upstream="http://image-api:8003",
                 required_vram_mb=12000,
                 unload=HookConfig(type="http", url="http://image-api:8003/admin/unload"),
-                health=HookConfig(type="http", url="http://image-api:8003/health", method="GET"),
             )
         },
     )
@@ -103,7 +102,7 @@ def test_non_gpu_route_does_not_take_gpu_lock_or_check_vram():
 
 
 @respx.mock
-def test_proxy_unloads_and_waits_for_health_before_upstream_request():
+def test_proxy_unloads_before_upstream_request():
     calls = []
 
     def record(name):
@@ -114,7 +113,6 @@ def test_proxy_unloads_and_waits_for_health_before_upstream_request():
         return _handler
 
     respx.post("http://image-api:8003/admin/unload").mock(side_effect=record("unload"))
-    respx.get("http://image-api:8003/health").mock(side_effect=record("health"))
     respx.post("http://image-api:8003/v1/images/generations").mock(side_effect=record("proxy"))
     client = TestClient(_app_with_hooks())
 
@@ -124,13 +122,12 @@ def test_proxy_unloads_and_waits_for_health_before_upstream_request():
     )
 
     assert response.status_code == 200
-    assert calls == ["unload", "health", "proxy"]
+    assert calls == ["unload", "proxy"]
 
 
 @respx.mock
-def test_proxy_ignores_missing_unload_hooks():
+def test_proxy_ignores_unload_hook_errors():
     respx.post("http://image-api:8003/admin/unload").mock(return_value=Response(404))
-    respx.get("http://image-api:8003/health").mock(return_value=Response(200))
     respx.post("http://image-api:8003/v1/images/generations").mock(
         return_value=Response(200, json={"ok": True})
     )

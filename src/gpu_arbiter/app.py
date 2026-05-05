@@ -109,7 +109,6 @@ def create_app(
 
         if not model.uses_gpu:
             try:
-                await lifecycle.wait_for_health(model.health)
                 response = await _proxy_request(model, route, request, body)
                 _log_event(
                     "request_completed",
@@ -136,9 +135,6 @@ def create_app(
                         True,
                     ),
                 )
-            except TimeoutError as exc:
-                _log_event("health_timeout", request_id=request_id, route=route, model_id=model_id, error=str(exc))
-                return JSONResponse(status_code=503, content=error_payload("health_timeout", "Model health check timed out", True))
 
         try:
             holder = model_id or route
@@ -146,7 +142,6 @@ def create_app(
             with lock.acquire(holder):
                 _log_event("gpu_lock_acquired", request_id=request_id, holder=holder)
                 await lifecycle.run_hooks(model.unload, ignore_errors=True)
-                await lifecycle.wait_for_health(model.health)
                 probe.ensure_available(model.required_vram_mb)
                 response = await _proxy_request(model, route, request, body)
                 if config.gpu.cooldown_seconds:
@@ -206,9 +201,6 @@ def create_app(
                     True,
                 ),
             )
-        except TimeoutError as exc:
-            _log_event("health_timeout", request_id=request_id, route=route, model_id=model_id, error=str(exc))
-            return JSONResponse(status_code=503, content=error_payload("health_timeout", "Model health check timed out", True))
 
     return app
 

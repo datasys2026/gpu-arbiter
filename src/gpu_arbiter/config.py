@@ -25,7 +25,6 @@ class HookConfig(BaseModel):
     headers: dict[str, str] = Field(default_factory=dict)
     body_json: Any | None = None
     timeout_seconds: float = Field(default=30, gt=0)
-    wait_timeout_seconds: float = Field(default=120, gt=0)
 
 
 class ModelConfig(BaseModel):
@@ -35,7 +34,6 @@ class ModelConfig(BaseModel):
     upstream: str
     uses_gpu: bool = True
     required_vram_mb: int = Field(default=0, ge=0)
-    health: HookConfig | None = None
     unload: HookConfig | list[HookConfig] | None = None
 
 

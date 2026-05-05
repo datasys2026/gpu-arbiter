@@ -94,15 +94,3 @@ async def test_lifecycle_runner_can_ignore_hook_errors():
 
     assert route.called
 
-
-@pytest.mark.anyio
-@respx.mock
-async def test_lifecycle_runner_waits_for_health_until_success():
-    route = respx.get("http://image-api:8003/health").mock(
-        side_effect=[Response(503), Response(200, json={"status": "ok"})]
-    )
-    runner = LifecycleRunner(poll_interval_seconds=0)
-
-    await runner.wait_for_health(HookConfig(type="http", url="http://image-api:8003/health", method="GET"))
-
-    assert route.call_count == 2

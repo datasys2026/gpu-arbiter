@@ -15,8 +15,6 @@ models:
     route: /v1/images/generations
     upstream: http://image-api:8003
     required_vram_mb: 12000
-    health:
-      url: http://image-api:8003/health
     unload:
       type: http
       url: http://image-api:8003/admin/unload
