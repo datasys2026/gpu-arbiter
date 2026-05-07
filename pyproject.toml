@@ -15,8 +15,10 @@ dependencies = [
 
 [project.optional-dependencies]
 nvml = ["nvidia-ml-py>=12.560"]
+queue = ["aiosqlite>=0.20"]
 test = [
     "pytest>=8.2",
+    "pytest-asyncio>=0.23",
     "respx>=0.21",
 ]
 
@@ -34,6 +36,7 @@ build-backend = "hatchling.build"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+asyncio_mode = "auto"
 
 [tool.ruff]
 line-length = 100

@@ -83,7 +83,60 @@ switching to a model with large VRAM requirements.
 
 ---
 
-### `POST|GET /<any-path>` — Model proxy
+### `POST /queue` — Async task submission (multi-tenant)
+
+Submit a GPU task without blocking. The request is queued and processed in FIFO order with
+per-tenant round-robin fairness. Requires `X-Tenant-ID` header. Max 10 pending tasks per tenant.
+
+**Request:**
+```
+POST /queue
+X-Tenant-ID: my-org
+Content-Type: application/json
+
+{ "model": "local/image-turbo", "prompt": "..." }
+```
+
+**Response (202):**
+```json
+{ "task_id": "a3f8c1...", "status": "pending" }
+```
+
+**Errors:** `400` missing tenant, `404` unknown model, `429` queue full.
+
+---
+
+### `GET /tasks/{task_id}` — Poll task status
+
+Poll until `status` is `done` or `failed`. Returns `404` if the task belongs to a different tenant.
+
+**Response (200):**
+```json
+{
+  "task_id": "a3f8c1...",
+  "status": "done",
+  "result": {
+    "status_code": 200,
+    "body": "...",
+    "headers": { "content-type": "application/json" },
+    "error": null
+  }
+}
+```
+
+`result` is `null` while `status` is `pending` or `running`.
+
+---
+
+### `GET /queue/status` — Queue overview
+
+```json
+{ "pending": 3, "running": 1, "tenants": ["org-a", "org-b"] }
+```
+
+---
+
+### `POST|GET /<any-path>` — Model proxy (synchronous)
 
 All other paths are routed to the matching model's upstream. The model is resolved from:
 1. The request body JSON field `"model"` (e.g. `{"model": "local/image-turbo", ...}`)
@@ -123,6 +176,8 @@ All errors follow the same envelope:
 | 503 | `insufficient_vram` | Not enough free VRAM after 60 s of polling | ✅ |
 | 404 | `model_not_found` | No model matches the route or `model` field | ❌ |
 | 502 | `upstream_error` | Upstream returned non-2xx | ✅ |
+| 400 | `missing_tenant` | `X-Tenant-ID` header not provided (queue endpoints) | ❌ |
+| 429 | `queue_full` | Per-tenant queue depth limit (10) reached | ✅ |
 
 `insufficient_vram` includes `free_mb` and `required_mb` fields.
 `gpu_busy` includes `holder` (the model ID currently using the GPU).

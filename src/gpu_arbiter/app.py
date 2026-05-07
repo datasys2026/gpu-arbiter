@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 import uuid
 
 import httpx
@@ -13,6 +14,8 @@ from gpu_arbiter.config import ArbiterConfig, ModelConfig
 from gpu_arbiter.errors import error_payload
 from gpu_arbiter.lifecycle import LifecycleRunner
 from gpu_arbiter.locking import GPUBusyError, InMemoryGPULock
+from gpu_arbiter.queue.models import Task, TaskStatus
+from gpu_arbiter.queue.store import InMemoryTaskStore, TaskStore
 from gpu_arbiter.vram import InsufficientVRAMError, StaticVRAMProbe, wait_for_vram_available
 
 
@@ -31,17 +34,22 @@ def _request_id(request: Request) -> str:
     return uuid.uuid4().hex
 
 
+_MAX_QUEUE_DEPTH = 10
+
+
 def create_app(
     config: ArbiterConfig,
     *,
     gpu_lock: InMemoryGPULock | None = None,
     vram_probe: StaticVRAMProbe | None = None,
     lifecycle_runner: LifecycleRunner | None = None,
+    task_store: TaskStore | None = None,
 ) -> FastAPI:
     app = FastAPI(title="GPU Arbiter")
     lock = gpu_lock or InMemoryGPULock()
     probe = vram_probe or StaticVRAMProbe(free_mb=0)
     lifecycle = lifecycle_runner or LifecycleRunner(logger=LOGGER)
+    store: TaskStore = task_store or InMemoryTaskStore()
 
     @app.get("/health")
     def health() -> dict:
@@ -79,6 +87,71 @@ def create_app(
                     holder=exc.holder,
                 ),
             )
+
+    @app.post("/queue", status_code=202)
+    async def queue_submit(request: Request) -> Response:
+        tenant_id = request.headers.get("x-tenant-id", "").strip()
+        if not tenant_id:
+            return JSONResponse(
+                status_code=400,
+                content=error_payload("missing_tenant", "X-Tenant-ID header is required", False),
+            )
+        body = await request.body()
+        model_id = _extract_model_id(request, body)
+        route = "/queue"
+        model = _resolve_model(config, route, model_id) if model_id else None
+        if model is None and model_id:
+            model = config.models.get(model_id)
+        if model is None:
+            return JSONResponse(
+                status_code=404,
+                content=error_payload(
+                    "model_not_found", "No configured model matches this request", False, model=model_id
+                ),
+            )
+        depth = await store.queue_depth(tenant_id)
+        if depth >= _MAX_QUEUE_DEPTH:
+            return JSONResponse(
+                status_code=429,
+                content=error_payload(
+                    "queue_full",
+                    f"Queue depth limit ({_MAX_QUEUE_DEPTH}) reached for this tenant",
+                    True,
+                ),
+            )
+        task = Task(
+            task_id=uuid.uuid4().hex,
+            tenant_id=tenant_id,
+            model_id=model_id or "",
+            route=model.route,
+            method=request.method,
+            headers=dict(request.headers),
+            body=body,
+            status=TaskStatus.PENDING,
+            created_at=time.monotonic(),
+        )
+        await store.create(task)
+        return JSONResponse(status_code=202, content={"task_id": task.task_id, "status": "pending"})
+
+    @app.get("/tasks/{task_id}")
+    async def task_status(task_id: str, request: Request) -> Response:
+        tenant_id = request.headers.get("x-tenant-id", "").strip()
+        task = await store.get(task_id)
+        if task is None or task.tenant_id != tenant_id:
+            return JSONResponse(status_code=404, content={"error": "task not found"})
+        result = None
+        if task.status in (TaskStatus.DONE, TaskStatus.FAILED):
+            result = {
+                "status_code": task.result_status,
+                "body": task.result_body.decode(errors="replace") if task.result_body else None,
+                "headers": task.result_headers,
+                "error": task.error,
+            }
+        return JSONResponse({"task_id": task.task_id, "status": task.status.value, "result": result})
+
+    @app.get("/queue/status")
+    async def queue_status() -> dict:
+        return await store.active_counts()
 
     @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
     async def proxy(path: str, request: Request) -> Response:
