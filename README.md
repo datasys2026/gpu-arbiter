@@ -1,55 +1,208 @@
 # GPU Arbiter
 
-GPU Arbiter 是一個給單機 Docker Compose AI 堆疊使用的輕量級 GPU runtime controller。
-它負責序列化重型 GPU 任務、檢查可用 VRAM、執行生命週期 hooks、代理請求到既有模型服務，
-並回傳清楚可重試的錯誤。
+GPU Arbiter 是一個給單機 Docker Compose AI 堆疊使用的輕量級反向代理。
+它透過全域 in-memory lock 序列化 GPU 任務、在 unload hooks 執行後輪詢 VRAM 可用量、
+等待服務就緒，最後將請求轉發給 upstream 模型服務。
 
-它不是 LiteLLM、Triton、KServe 或 GPUStack 的替代品。目標是單張 3090/4090 等級主機上，
-同時跑圖像、語音、音樂等異質模型服務時，提供一層明確的控制平面。
+目標：單張 3090/4090 等級主機上同時跑異質服務（圖像、語音、音樂、LLM chat）。
+不是 LiteLLM、Triton、KServe 或 GPUStack 的替代品。
 
 ## 語言
 
 - 繁體中文：這份檔案
 - English: [README.en.md](./README.en.md)
 
-## 它解決什麼
+---
 
-- 在不同模型服務之間做全域 GPU 鎖
-- 依模型或路由轉發到 upstream
-- 在請求前做 NVML 相容的 VRAM 預檢
-- 支援 `unload` 與 `health` 這類 HTTP lifecycle hooks
-- 先卸載再載入的執行順序
-- 清楚的可重試錯誤：`gpu_busy`、`insufficient_vram`、`upstream_error`
-- 提供 health 與 model list 端點
+## 請求流程（GPU 路由）
 
-## 請求流程
+對每一條已設定的 GPU route，GPU Arbiter 依序執行：
 
-對每一條已設定的 GPU route，GPU Arbiter 會依序執行：
+1. **解析模型** — 從 request body 的 `model` 欄位或路由路徑判定目標模型。
+2. **取得 GPU lock** — in-memory；並行請求在此排隊。
+3. **執行 `unload` hooks** — 呼叫其他服務釋放 VRAM。Best-effort（錯誤忽略）。
+4. **輪詢 VRAM** — 每 2 秒透過 NVML 讀取可用 GPU 記憶體，最多等 60 秒。逾時回傳 `503`。
+5. **執行 `health` hook** — 等待 upstream 就緒（每個模型可選）。
+6. **轉發請求** — 將原始請求傳給 upstream 服務。
+7. **Cooldown** — 可選的等待時間，釋放 lock 前先睡眠（避免連打）。
 
-1. 從 request body 的 `model` 欄位或路由判定目標模型。
-2. 取得全域 GPU lock。
-3. 若有設定，先執行模型的 `unload` hook。
-4. 若有設定，等待模型的 `health` hook 通過。
-5. 檢查 `required_vram_mb` 是否小於目前可用 VRAM。
-6. 將請求轉發到 upstream 服務。
-7. 若有設定，完成後進入 cooldown 再釋放 lock。
+非 GPU 路由（`uses_gpu: false`）跳過步驟 2–5，直接轉發。
 
-這樣可以把模型生命週期管理從各自的服務中抽離出來，同時保留原本的 API 介面。
+---
+
+## API 端點
+
+### `GET /health`
+
+回傳 arbiter 狀態與目前 GPU 狀態。
+
+```json
+{
+  "status": "ok",
+  "gpu": { "index": 0, "free_mb": 22000 },
+  "models": ["local/image-turbo", "local/tts"],
+  "holder": null
+}
+```
+
+`holder` 是目前持有 GPU lock 的模型 ID，閒置時為 `null`。
+
+---
+
+### `GET /models`
+
+回傳所有已設定的模型 ID 列表。
+
+```json
+{ "data": [{ "id": "local/image-turbo" }, { "id": "local/tts" }] }
+```
+
+---
+
+### `POST /admin/unload`
+
+對所有模型執行全部 `unload` hooks。適合在維護前或切換大型模型前清空 GPU。
+
+**成功：**
+```json
+{ "status": "ok" }
+```
+
+**GPU 忙碌（409）：**
+```json
+{
+  "error": {
+    "type": "gpu_busy",
+    "message": "GPU is occupied by another generation job",
+    "retryable": true,
+    "holder": "local/image-turbo"
+  }
+}
+```
+
+---
+
+### `POST|GET /<任意路徑>` — 模型代理
+
+所有其他路徑會被路由到對應模型的 upstream。模型解析順序：
+1. Request body JSON 中的 `"model"` 欄位（如 `{"model": "local/image-turbo", ...}`）
+2. 路由路徑本身（當只有一個模型匹配該路徑時）
+
+**範例 — 圖像生成：**
+```
+POST /v1/images/generations
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{ "model": "local/image-turbo", "prompt": "...", ... }
+```
+
+**成功：** upstream 的回應原封不動轉發（status + body + headers）。
+
+---
+
+## 錯誤回應
+
+所有錯誤使用相同結構：
+
+```json
+{
+  "error": {
+    "type": "<錯誤類型>",
+    "message": "<說明>",
+    "retryable": true | false,
+    ...額外欄位...
+  }
+}
+```
+
+| HTTP | `type` | 意義 | 可重試 |
+|------|--------|------|--------|
+| 409 | `gpu_busy` | 其他請求持有 GPU lock | ✅ |
+| 503 | `insufficient_vram` | 輪詢 60 秒後 VRAM 仍不足 | ✅ |
+| 404 | `model_not_found` | 沒有模型匹配此路由或 `model` 欄位 | ❌ |
+| 502 | `upstream_error` | Upstream 回傳非 2xx | ✅ |
+
+`insufficient_vram` 額外包含 `free_mb`（實際可用）與 `required_mb`（需求）。
+`gpu_busy` 額外包含 `holder`（目前佔用 GPU 的模型 ID）。
+
+---
+
+## 設定格式
+
+```yaml
+gpu:
+  index: 0               # GPU 裝置索引（預設：0）
+  cooldown_seconds: 2    # 每次請求完成後，釋放 lock 前的等待秒數
+
+models:
+  <模型ID>:
+    route: /v1/images/generations   # 此模型處理的 URL 路徑
+    upstream: http://image-api:8003 # 轉發目標
+    uses_gpu: true                  # false = 跳過 lock/VRAM 檢查（預設：true）
+    required_vram_mb: 12000         # 執行前需要的最低可用 VRAM（MB）
+
+    health:                         # 可選：等待 upstream 就緒
+      type: http
+      url: http://image-api:8003/health
+      method: GET
+      wait_timeout_seconds: 180
+
+    unload:                         # 可選：在此模型執行前，用來釋放其他服務 VRAM 的 hooks
+      - type: http
+        url: http://other-api:8002/admin/unload
+        timeout_seconds: 30
+        headers:
+          Authorization: Bearer ${OTHER_API_KEY}
+      - type: http
+        url: http://ollama:11434/api/generate
+        body_json:
+          model: llama3:8b
+          keep_alive: 0
+```
+
+多個模型可以共用同一個 `route` — request body 的 `model` 欄位決定套用哪個設定。
+只有一個模型匹配路由時，`model` 欄位可省略。
+
+頂層以 `x-` 開頭的 key 會被忽略（可用來定義 YAML anchors）。
+
+所有字串值支援環境變數展開：`${VAR_NAME}`。
+
+---
 
 ## 快速開始
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-python -m pip install -e ".[test,nvml]"
+pip install -e ".[test,nvml]"
 pytest
-gpu-arbiter --config examples/config.example.yaml --host 127.0.0.1 --port 8090
+gpu-arbiter --config examples/config.example.yaml --host 0.0.0.0 --port 8090
 ```
 
-## 範例設定
+## Docker Compose 部署
 
-可先從 [examples/config.example.yaml](./examples/config.example.yaml) 開始。
-如果要看內部 AIARK 的部署樣板，則看 [examples/config.aiark.yaml](./examples/config.aiark.yaml)。
+```yaml
+services:
+  gpu-arbiter:
+    image: ghcr.io/datasys2026/gpu-arbiter:latest
+    ports:
+      - "8090:8090"
+    volumes:
+      - ./config/gpu-arbiter.yaml:/config/config.yaml:ro
+    devices:
+      - /dev/nvidia0
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+```
+
+完整範例見 [`examples/docker-compose.yml`](./examples/docker-compose.yml) 與
+[`examples/config.example.yaml`](./examples/config.example.yaml)。
 
 ## 文件
 
@@ -59,8 +212,3 @@ gpu-arbiter --config examples/config.example.yaml --host 127.0.0.1 --port 8090
 - [錯誤碼](./docs/errors.zh-TW.md)
 - [相容性](./docs/compatibility.zh-TW.md)
 - [繁中導覽頁](./docs/index.zh-TW.md)
-
-## 為什麼要做這個 repo
-
-這個專案刻意維持小而明確。目標不是做成完整的模型託管平台，而是在既有模型服務前面加一層
-控制平面，專門處理 GPU 鎖、生命週期 hooks 與可重試錯誤。
