@@ -9,7 +9,7 @@ COPY pyproject.toml README.md /app/
 COPY src /app/src
 
 RUN python -m pip install --upgrade pip \
-    && python -m pip install ".[nvml]"
+    && python -m pip install ".[nvml,queue]"
 
 EXPOSE 8090
 ENTRYPOINT ["gpu-arbiter"]
