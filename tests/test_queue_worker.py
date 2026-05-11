@@ -63,6 +63,23 @@ async def test_run_once_marks_failed_on_execute_exception():
     assert "GPU exploded" in failed.error
 
 
+async def test_run_once_requeues_task_on_retriable_error():
+    from gpu_arbiter.queue.models import RetriableError
+    store = InMemoryTaskStore()
+    task = make_task()
+    await store.create(task)
+
+    async def busy_execute(t: Task) -> tuple[int, bytes, dict]:
+        raise RetriableError("GPU busy, try again")
+
+    worker = QueueWorker(store=store, execute_fn=busy_execute)
+    result = await worker.run_once()
+    assert result is True  # did process (attempt was made)
+
+    requeued = await store.get(task.task_id)
+    assert requeued.status == TaskStatus.PENDING  # put back, not FAILED
+
+
 async def test_run_once_returns_true_and_processes_in_order():
     store = InMemoryTaskStore()
     processed: list[str] = []

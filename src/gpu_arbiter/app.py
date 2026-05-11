@@ -5,6 +5,8 @@ import json
 import logging
 import time
 import uuid
+from collections.abc import Awaitable, Callable
+from contextlib import asynccontextmanager
 
 import httpx
 from fastapi import FastAPI, Request
@@ -14,8 +16,9 @@ from gpu_arbiter.config import ArbiterConfig, ModelConfig
 from gpu_arbiter.errors import error_payload
 from gpu_arbiter.lifecycle import LifecycleRunner
 from gpu_arbiter.locking import GPUBusyError, InMemoryGPULock
-from gpu_arbiter.queue.models import Task, TaskStatus
+from gpu_arbiter.queue.models import RetriableError, Task, TaskStatus
 from gpu_arbiter.queue.store import InMemoryTaskStore, TaskStore
+from gpu_arbiter.queue.worker import QueueWorker
 from gpu_arbiter.vram import InsufficientVRAMError, StaticVRAMProbe, wait_for_vram_available
 
 
@@ -44,12 +47,28 @@ def create_app(
     vram_probe: StaticVRAMProbe | None = None,
     lifecycle_runner: LifecycleRunner | None = None,
     task_store: TaskStore | None = None,
+    task_execute_fn: Callable[[Task], Awaitable[tuple[int, bytes, dict]]] | None = None,
+    worker_poll_interval: float = 1.0,
+    task_ttl_seconds: float = 3600.0,
+    cleanup_interval_seconds: float = 300.0,
 ) -> FastAPI:
-    app = FastAPI(title="GPU Arbiter")
     lock = gpu_lock or InMemoryGPULock()
     probe = vram_probe or StaticVRAMProbe(free_mb=0)
     lifecycle = lifecycle_runner or LifecycleRunner(logger=LOGGER)
     store: TaskStore = task_store or InMemoryTaskStore()
+    execute_fn = task_execute_fn or _make_execute_fn(config, lock, probe, lifecycle)
+    worker = QueueWorker(store=store, execute_fn=execute_fn, poll_interval=worker_poll_interval)
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        import anyio
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(worker.run)
+            tg.start_soon(_cleanup_loop, store, task_ttl_seconds, cleanup_interval_seconds)
+            yield
+            tg.cancel_scope.cancel()
+
+    app = FastAPI(title="GPU Arbiter", lifespan=lifespan)
 
     @app.get("/health")
     def health() -> dict:
@@ -299,27 +318,65 @@ def _resolve_model(config: ArbiterConfig, route: str, model_id: str | None) -> M
     return None
 
 
-async def _proxy_request(model: ModelConfig, route: str, request: Request, body: bytes) -> Response:
+_EXCLUDED_RESPONSE_HEADERS = frozenset({
+    "transfer-encoding", "connection", "content-encoding", "keep-alive",
+    "proxy-authenticate", "proxy-authorization", "te", "trailers", "upgrade",
+})
+_EXCLUDED_REQUEST_HEADERS = frozenset({"host", "content-length"})
+
+
+async def _proxy_request_raw(
+    model: ModelConfig,
+    route: str,
+    method: str,
+    headers: dict,
+    body: bytes,
+    params: object = None,
+) -> tuple[int, bytes, dict]:
     upstream_url = model.upstream.rstrip("/") + route
-    headers = {
-        key: value
-        for key, value in request.headers.items()
-        if key.lower() not in {"host", "content-length"}
-    }
+    filtered = {k: v for k, v in headers.items() if k.lower() not in _EXCLUDED_REQUEST_HEADERS}
+    kwargs: dict = {"content": body, "headers": filtered}
+    if params:
+        kwargs["params"] = params
     async with httpx.AsyncClient(timeout=900) as client:
-        upstream_response = await client.request(
-            request.method,
-            upstream_url,
-            content=body,
-            headers=headers,
-            params=request.query_params,
-        )
-    media_type = upstream_response.headers.get("content-type")
-    excluded = {"transfer-encoding", "connection", "content-encoding", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailers", "upgrade"}
-    fwd_headers = {k: v for k, v in upstream_response.headers.items() if k.lower() not in excluded}
-    return Response(
-        content=upstream_response.content,
-        status_code=upstream_response.status_code,
-        headers=fwd_headers,
-        media_type=media_type,
+        resp = await client.request(method, upstream_url, **kwargs)
+    fwd_headers = {k: v for k, v in resp.headers.items() if k.lower() not in _EXCLUDED_RESPONSE_HEADERS}
+    return resp.status_code, resp.content, fwd_headers
+
+
+async def _proxy_request(model: ModelConfig, route: str, request: Request, body: bytes) -> Response:
+    status_code, content, fwd_headers = await _proxy_request_raw(
+        model, route, request.method, dict(request.headers), body, params=request.query_params
     )
+    media_type = fwd_headers.get("content-type")
+    return Response(content=content, status_code=status_code, headers=fwd_headers, media_type=media_type)
+
+
+def _make_execute_fn(
+    config: ArbiterConfig,
+    lock: InMemoryGPULock,
+    probe: StaticVRAMProbe,
+    lifecycle: LifecycleRunner,
+) -> Callable[[Task], Awaitable[tuple[int, bytes, dict]]]:
+    async def execute(task: Task) -> tuple[int, bytes, dict]:
+        model = config.models.get(task.model_id)
+        if model is None:
+            raise ValueError(f"model {task.model_id!r} not configured")
+        if not model.uses_gpu:
+            return await _proxy_request_raw(model, task.route, task.method, task.headers, task.body)
+        try:
+            with lock.acquire(task.model_id):
+                await lifecycle.run_hooks(model.unload, ignore_errors=True)
+                wait_for_vram_available(probe, model.required_vram_mb)
+                return await _proxy_request_raw(model, task.route, task.method, task.headers, task.body)
+        except GPUBusyError as exc:
+            raise RetriableError(f"GPU busy, held by {exc.holder}") from exc
+
+    return execute
+
+
+async def _cleanup_loop(store: TaskStore, ttl_seconds: float, interval_seconds: float) -> None:
+    import anyio
+    while True:
+        await anyio.sleep(interval_seconds)
+        await store.delete_expired(ttl_seconds)

@@ -108,3 +108,63 @@ async def test_queue_depth_excludes_running_and_done():
     await store.create(task)
     await store.claim_next()  # sets to RUNNING
     assert await store.queue_depth("t1") == 0
+
+
+async def test_update_sets_completed_at_when_done():
+    store = InMemoryTaskStore()
+    task = make_task()
+    await store.create(task)
+    assert task.completed_at is None
+    await store.update(task.task_id, status=TaskStatus.DONE, result_status=200, result_body=b"")
+    updated = await store.get(task.task_id)
+    assert updated.completed_at is not None
+
+
+async def test_update_sets_completed_at_when_failed():
+    store = InMemoryTaskStore()
+    task = make_task()
+    await store.create(task)
+    await store.update(task.task_id, status=TaskStatus.FAILED, error="boom")
+    updated = await store.get(task.task_id)
+    assert updated.completed_at is not None
+
+
+async def test_update_does_not_set_completed_at_for_running():
+    store = InMemoryTaskStore()
+    task = make_task()
+    await store.create(task)
+    await store.update(task.task_id, status=TaskStatus.RUNNING)
+    updated = await store.get(task.task_id)
+    assert updated.completed_at is None
+
+
+async def test_delete_expired_removes_tasks_past_ttl():
+    store = InMemoryTaskStore()
+    task = make_task()
+    await store.create(task)
+    await store.update(task.task_id, status=TaskStatus.DONE, result_status=200, result_body=b"")
+    # force completed_at to the past
+    (await store.get(task.task_id)).completed_at = 0.0
+    deleted = await store.delete_expired(ttl_seconds=1.0)
+    assert deleted == 1
+    assert await store.get(task.task_id) is None
+
+
+async def test_delete_expired_keeps_recent_completed_tasks():
+    store = InMemoryTaskStore()
+    task = make_task()
+    await store.create(task)
+    await store.update(task.task_id, status=TaskStatus.DONE, result_status=200, result_body=b"")
+    # completed_at is just set — not expired yet with a long TTL
+    deleted = await store.delete_expired(ttl_seconds=3600.0)
+    assert deleted == 0
+    assert await store.get(task.task_id) is not None
+
+
+async def test_delete_expired_never_removes_pending_tasks():
+    store = InMemoryTaskStore()
+    task = make_task()
+    await store.create(task)
+    deleted = await store.delete_expired(ttl_seconds=0.0)
+    assert deleted == 0
+    assert await store.get(task.task_id) is not None

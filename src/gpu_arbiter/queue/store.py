@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from typing import Protocol, runtime_checkable
 
 from gpu_arbiter.queue.models import Task, TaskStatus
@@ -13,6 +14,7 @@ class TaskStore(Protocol):
     async def update(self, task_id: str, **fields: object) -> None: ...
     async def queue_depth(self, tenant_id: str) -> int: ...
     async def active_counts(self) -> dict: ...
+    async def delete_expired(self, ttl_seconds: float) -> int: ...
 
 
 class InMemoryTaskStore:
@@ -56,6 +58,9 @@ class InMemoryTaskStore:
             return
         for key, value in fields.items():
             setattr(task, key, value)
+        new_status = fields.get("status")
+        if new_status in (TaskStatus.DONE, TaskStatus.FAILED) and task.completed_at is None:
+            task.completed_at = time.monotonic()
 
     async def queue_depth(self, tenant_id: str) -> int:
         return sum(
@@ -63,6 +68,17 @@ class InMemoryTaskStore:
             for t in self._tasks.values()
             if t.tenant_id == tenant_id and t.status == TaskStatus.PENDING
         )
+
+    async def delete_expired(self, ttl_seconds: float) -> int:
+        cutoff = time.monotonic() - ttl_seconds
+        expired = [
+            t.task_id
+            for t in self._tasks.values()
+            if t.completed_at is not None and t.completed_at <= cutoff
+        ]
+        for task_id in expired:
+            del self._tasks[task_id]
+        return len(expired)
 
     async def active_counts(self) -> dict:
         all_tasks = list(self._tasks.values())

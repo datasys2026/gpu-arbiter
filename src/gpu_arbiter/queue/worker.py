@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import asyncio
+import anyio
 from collections.abc import Awaitable, Callable
 
-from gpu_arbiter.queue.models import Task, TaskStatus
+from gpu_arbiter.queue.models import RetriableError, Task, TaskStatus
 from gpu_arbiter.queue.store import TaskStore
 
 
@@ -32,6 +32,8 @@ class QueueWorker:
                 result_body=body,
                 result_headers=headers,
             )
+        except RetriableError:
+            await self._store.update(task.task_id, status=TaskStatus.PENDING)
         except Exception as exc:
             await self._store.update(task.task_id, status=TaskStatus.FAILED, error=str(exc))
         return True
@@ -41,7 +43,7 @@ class QueueWorker:
         while self._running:
             processed = await self.run_once()
             if not processed:
-                await asyncio.sleep(self._poll_interval)
+                await anyio.sleep(self._poll_interval)
 
     def stop(self) -> None:
         self._running = False
