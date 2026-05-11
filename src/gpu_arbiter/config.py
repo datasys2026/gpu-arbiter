@@ -33,7 +33,7 @@ class HealthConfig(BaseModel):
     type: Literal["http"] = "http"
     url: str
     method: str = "GET"
-    wait_timeout_seconds: float = Field(default=180, gt=0)
+    wait_timeout_seconds: float = Field(default=60, gt=0)
     poll_interval_seconds: float = Field(default=2.0, gt=0)
 
 
