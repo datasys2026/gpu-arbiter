@@ -106,9 +106,31 @@ Content-Type: application/json
 
 ---
 
+### `GET /tasks` — List tenant tasks
+
+Returns all tasks for the calling tenant. Optional `?status=` filter.
+
+```
+GET /tasks?status=pending
+X-Tenant-ID: my-org
+```
+
+**Response (200):**
+```json
+{
+  "tasks": [
+    { "task_id": "a3f8c1...", "status": "pending", "model_id": "local/chat", "created_at": 1234.5 }
+  ]
+}
+```
+
+Status values: `pending`, `running`, `done`, `failed`, `cancelled`.
+
+---
+
 ### `GET /tasks/{task_id}` — Poll task status
 
-Poll until `status` is `done` or `failed`. Returns `404` if the task belongs to a different tenant.
+Poll until `status` is `done`, `failed`, or `cancelled`. Returns `404` if the task belongs to a different tenant.
 
 **Response (200):**
 ```json
@@ -125,6 +147,17 @@ Poll until `status` is `done` or `failed`. Returns `404` if the task belongs to 
 ```
 
 `result` is `null` while `status` is `pending` or `running`.
+
+---
+
+### `DELETE /tasks/{task_id}` — Cancel a task
+
+Cancel a `pending` task. Returns `409` if the task is already `running`, `done`, `failed`, or `cancelled`.
+
+**Response (200):**
+```json
+{ "task_id": "a3f8c1...", "status": "cancelled" }
+```
 
 ---
 
@@ -178,6 +211,7 @@ All errors follow the same envelope:
 | 502 | `upstream_error` | Upstream returned non-2xx | ✅ |
 | 400 | `missing_tenant` | `X-Tenant-ID` header not provided (queue endpoints) | ❌ |
 | 429 | `queue_full` | Per-tenant queue depth limit (10) reached | ✅ |
+| 409 | `task_not_cancellable` | Task is not in `pending` state | ❌ |
 
 `insufficient_vram` includes `free_mb` and `required_mb` fields.
 `gpu_busy` includes `holder` (the model ID currently using the GPU).
@@ -233,7 +267,7 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -e ".[test,nvml]"
 pytest
-gpu-arbiter --config examples/config.example.yaml --host 0.0.0.0 --port 8090
+gpu-arbiter --config examples/config.example.yaml --host 0.0.0.0 --port 8090 --db ./queue.db
 ```
 
 ## Deployment (Docker Compose)

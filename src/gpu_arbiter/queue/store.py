@@ -8,6 +8,8 @@ from gpu_arbiter.queue.models import Task, TaskStatus
 
 @runtime_checkable
 class TaskStore(Protocol):
+    async def initialize(self) -> None: ...
+    async def close(self) -> None: ...
     async def create(self, task: Task) -> None: ...
     async def get(self, task_id: str) -> Task | None: ...
     async def claim_next(self) -> Task | None: ...
@@ -22,6 +24,12 @@ class InMemoryTaskStore:
     def __init__(self) -> None:
         self._tasks: dict[str, Task] = {}
         self._last_tenant: str | None = None
+
+    async def initialize(self) -> None:
+        pass
+
+    async def close(self) -> None:
+        pass
 
     async def create(self, task: Task) -> None:
         self._tasks[task.task_id] = task

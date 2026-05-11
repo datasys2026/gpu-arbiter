@@ -133,3 +133,38 @@ def test_lifespan_wires_worker_processes_queued_task():
         assert final_status == "done"
         result = client.get(f"/tasks/{task_id}", headers={"X-Tenant-ID": "t1"}).json()["result"]
         assert result["status_code"] == 200
+
+
+# --- SQLiteTaskStore lifespan integration ---
+
+def test_lifespan_initializes_and_closes_sqlite_store(tmp_path):
+    from gpu_arbiter.queue.sqlite_store import SQLiteTaskStore
+
+    store = SQLiteTaskStore(str(tmp_path / "queue.db"))
+
+    async def fast_execute(task: Task) -> tuple[int, bytes, dict]:
+        return 200, b'{"ok":true}', {}
+
+    app = create_app(
+        _make_config(),
+        vram_probe=StaticVRAMProbe(free_mb=99999),
+        task_store=store,
+        task_execute_fn=fast_execute,
+        worker_poll_interval=0.05,
+    )
+
+    with TestClient(app) as client:
+        resp = client.post(
+            "/queue",
+            json={"model": "local/chat"},
+            headers={"X-Tenant-ID": "t1"},
+        )
+        assert resp.status_code == 202
+        task_id = resp.json()["task_id"]
+
+        for _ in range(30):
+            time.sleep(0.05)
+            if client.get(f"/tasks/{task_id}", headers={"X-Tenant-ID": "t1"}).json()["status"] == "done":
+                break
+
+        assert client.get(f"/tasks/{task_id}", headers={"X-Tenant-ID": "t1"}).json()["status"] == "done"

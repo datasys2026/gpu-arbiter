@@ -105,9 +105,31 @@ Content-Type: application/json
 
 ---
 
+### `GET /tasks` — 列出租戶任務
+
+回傳呼叫者的所有任務，可用 `?status=` 篩選。
+
+```
+GET /tasks?status=pending
+X-Tenant-ID: my-org
+```
+
+**Response (200)：**
+```json
+{
+  "tasks": [
+    { "task_id": "a3f8c1...", "status": "pending", "model_id": "local/chat", "created_at": 1234.5 }
+  ]
+}
+```
+
+狀態值：`pending`、`running`、`done`、`failed`、`cancelled`。
+
+---
+
 ### `GET /tasks/{task_id}` — 輪詢任務狀態
 
-輪詢直到 `status` 為 `done` 或 `failed`。若 task 屬於其他租戶回傳 `404`。
+輪詢直到 `status` 為 `done`、`failed` 或 `cancelled`。若 task 屬於其他租戶回傳 `404`。
 
 **Response (200)：**
 ```json
@@ -124,6 +146,17 @@ Content-Type: application/json
 ```
 
 `status` 為 `pending` 或 `running` 時 `result` 為 `null`。
+
+---
+
+### `DELETE /tasks/{task_id}` — 取消任務
+
+取消 `pending` 任務。任務已是 `running`/`done`/`failed`/`cancelled` 時回傳 `409`。
+
+**Response (200)：**
+```json
+{ "task_id": "a3f8c1...", "status": "cancelled" }
+```
 
 ---
 
@@ -177,6 +210,7 @@ Content-Type: application/json
 | 502 | `upstream_error` | Upstream 回傳非 2xx | ✅ |
 | 400 | `missing_tenant` | 未提供 `X-Tenant-ID` header（佇列端點） | ❌ |
 | 429 | `queue_full` | 每租戶佇列深度上限（10）已達 | ✅ |
+| 409 | `task_not_cancellable` | 任務不是 `pending` 狀態，無法取消 | ❌ |
 
 `insufficient_vram` 額外包含 `free_mb`（實際可用）與 `required_mb`（需求）。
 `gpu_busy` 額外包含 `holder`（目前佔用 GPU 的模型 ID）。
@@ -232,7 +266,7 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -e ".[test,nvml]"
 pytest
-gpu-arbiter --config examples/config.example.yaml --host 0.0.0.0 --port 8090
+gpu-arbiter --config examples/config.example.yaml --host 0.0.0.0 --port 8090 --db ./queue.db
 ```
 
 ## Docker Compose 部署

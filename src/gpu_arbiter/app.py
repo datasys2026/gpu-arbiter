@@ -62,11 +62,15 @@ def create_app(
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         import anyio
-        async with anyio.create_task_group() as tg:
-            tg.start_soon(worker.run)
-            tg.start_soon(_cleanup_loop, store, task_ttl_seconds, cleanup_interval_seconds)
-            yield
-            tg.cancel_scope.cancel()
+        await store.initialize()
+        try:
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(worker.run)
+                tg.start_soon(_cleanup_loop, store, task_ttl_seconds, cleanup_interval_seconds)
+                yield
+                tg.cancel_scope.cancel()
+        finally:
+            await store.close()
 
     app = FastAPI(title="GPU Arbiter", lifespan=lifespan)
 
