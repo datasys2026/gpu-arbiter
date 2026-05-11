@@ -165,3 +165,73 @@ def test_queue_status_returns_counts():
     assert body["pending"] == 2
     assert body["running"] == 0
     assert set(body["tenants"]) == {"tenant-a", "tenant-b"}
+
+
+# --- GET /tasks (task listing) ---
+
+def test_list_tasks_returns_own_tasks():
+    client, _ = _make_client()
+    client.post("/queue", json={"model": "local/chat"}, headers={"X-Tenant-ID": "t1"})
+    client.post("/queue", json={"model": "local/chat"}, headers={"X-Tenant-ID": "t1"})
+    client.post("/queue", json={"model": "local/chat"}, headers={"X-Tenant-ID": "t2"})
+
+    resp = client.get("/tasks", headers={"X-Tenant-ID": "t1"})
+    assert resp.status_code == 200
+    assert len(resp.json()["tasks"]) == 2
+
+
+def test_list_tasks_requires_tenant_id():
+    client, _ = _make_client()
+    resp = client.get("/tasks")
+    assert resp.status_code == 400
+
+
+def test_list_tasks_filters_by_status():
+    client, store = _make_client()
+    sub = client.post("/queue", json={"model": "local/chat"}, headers={"X-Tenant-ID": "t1"})
+    task_id = sub.json()["task_id"]
+    import asyncio
+    asyncio.run(store.update(task_id, status=TaskStatus.DONE, result_status=200, result_body=b""))
+
+    pending = client.get("/tasks?status=pending", headers={"X-Tenant-ID": "t1"})
+    done = client.get("/tasks?status=done", headers={"X-Tenant-ID": "t1"})
+    assert len(pending.json()["tasks"]) == 0
+    assert len(done.json()["tasks"]) == 1
+
+
+# --- DELETE /tasks/{id} (cancellation) ---
+
+def test_cancel_pending_task_returns_200():
+    client, _ = _make_client()
+    sub = client.post("/queue", json={"model": "local/chat"}, headers={"X-Tenant-ID": "t1"})
+    task_id = sub.json()["task_id"]
+
+    resp = client.delete(f"/tasks/{task_id}", headers={"X-Tenant-ID": "t1"})
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "cancelled"
+
+
+def test_cancel_done_task_returns_409():
+    client, store = _make_client()
+    sub = client.post("/queue", json={"model": "local/chat"}, headers={"X-Tenant-ID": "t1"})
+    task_id = sub.json()["task_id"]
+    import asyncio
+    asyncio.run(store.update(task_id, status=TaskStatus.DONE, result_status=200, result_body=b""))
+
+    resp = client.delete(f"/tasks/{task_id}", headers={"X-Tenant-ID": "t1"})
+    assert resp.status_code == 409
+
+
+def test_cancel_other_tenant_task_returns_404():
+    client, _ = _make_client()
+    sub = client.post("/queue", json={"model": "local/chat"}, headers={"X-Tenant-ID": "t1"})
+    task_id = sub.json()["task_id"]
+
+    resp = client.delete(f"/tasks/{task_id}", headers={"X-Tenant-ID": "t2"})
+    assert resp.status_code == 404
+
+
+def test_cancel_missing_task_returns_404():
+    client, _ = _make_client()
+    resp = client.delete("/tasks/doesnotexist", headers={"X-Tenant-ID": "t1"})
+    assert resp.status_code == 404

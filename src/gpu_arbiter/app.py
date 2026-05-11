@@ -152,6 +152,31 @@ def create_app(
         await store.create(task)
         return JSONResponse(status_code=202, content={"task_id": task.task_id, "status": "pending"})
 
+    @app.get("/tasks")
+    async def list_tasks(request: Request, status: str | None = None) -> Response:
+        tenant_id = request.headers.get("x-tenant-id", "").strip()
+        if not tenant_id:
+            return JSONResponse(
+                status_code=400,
+                content=error_payload("missing_tenant", "X-Tenant-ID header is required", False),
+            )
+        filter_status = None
+        if status:
+            try:
+                filter_status = TaskStatus(status)
+            except ValueError:
+                return JSONResponse(
+                    status_code=400,
+                    content=error_payload("invalid_status", f"Unknown status: {status!r}", False),
+                )
+        tasks = await store.list_tasks(tenant_id, status=filter_status)
+        return JSONResponse({
+            "tasks": [
+                {"task_id": t.task_id, "status": t.status.value, "model_id": t.model_id, "created_at": t.created_at}
+                for t in tasks
+            ]
+        })
+
     @app.get("/tasks/{task_id}")
     async def task_status(task_id: str, request: Request) -> Response:
         tenant_id = request.headers.get("x-tenant-id", "").strip()
@@ -167,6 +192,24 @@ def create_app(
                 "error": task.error,
             }
         return JSONResponse({"task_id": task.task_id, "status": task.status.value, "result": result})
+
+    @app.delete("/tasks/{task_id}")
+    async def cancel_task(task_id: str, request: Request) -> Response:
+        tenant_id = request.headers.get("x-tenant-id", "").strip()
+        task = await store.get(task_id)
+        if task is None or task.tenant_id != tenant_id:
+            return JSONResponse(status_code=404, content={"error": "task not found"})
+        if task.status != TaskStatus.PENDING:
+            return JSONResponse(
+                status_code=409,
+                content=error_payload(
+                    "task_not_cancellable",
+                    f"Only pending tasks can be cancelled (current status: {task.status.value})",
+                    False,
+                ),
+            )
+        await store.update(task_id, status=TaskStatus.CANCELLED)
+        return JSONResponse({"task_id": task_id, "status": "cancelled"})
 
     @app.get("/queue/status")
     async def queue_status() -> dict:

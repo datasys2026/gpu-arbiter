@@ -9,6 +9,7 @@ class TaskStatus(str, Enum):
     RUNNING = "running"
     DONE = "done"
     FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 class RetriableError(Exception):

@@ -168,3 +168,56 @@ async def test_delete_expired_never_removes_pending_tasks():
     deleted = await store.delete_expired(ttl_seconds=0.0)
     assert deleted == 0
     assert await store.get(task.task_id) is not None
+
+# --- list_tasks ---
+
+async def test_list_tasks_returns_all_tenant_tasks():
+    store = InMemoryTaskStore()
+    t1 = make_task(tenant_id="t1")
+    t2 = make_task(tenant_id="t1")
+    t3 = make_task(tenant_id="t2")
+    await store.create(t1)
+    await store.create(t2)
+    await store.create(t3)
+    result = await store.list_tasks("t1")
+    ids = {t.task_id for t in result}
+    assert ids == {t1.task_id, t2.task_id}
+
+
+async def test_list_tasks_filters_by_status():
+    store = InMemoryTaskStore()
+    t_pending = make_task(tenant_id="t1")
+    t_done = make_task(tenant_id="t1")
+    await store.create(t_pending)
+    await store.create(t_done)
+    await store.update(t_done.task_id, status=TaskStatus.DONE, result_status=200, result_body=b"")
+    result = await store.list_tasks("t1", status=TaskStatus.PENDING)
+    assert len(result) == 1
+    assert result[0].task_id == t_pending.task_id
+
+
+async def test_list_tasks_returns_empty_for_unknown_tenant():
+    store = InMemoryTaskStore()
+    assert await store.list_tasks("nobody") == []
+
+
+# --- CANCELLED status ---
+
+async def test_update_sets_completed_at_when_cancelled():
+    store = InMemoryTaskStore()
+    task = make_task()
+    await store.create(task)
+    await store.update(task.task_id, status=TaskStatus.CANCELLED)
+    updated = await store.get(task.task_id)
+    assert updated.status == TaskStatus.CANCELLED
+    assert updated.completed_at is not None
+
+
+async def test_delete_expired_removes_cancelled_tasks():
+    store = InMemoryTaskStore()
+    task = make_task()
+    await store.create(task)
+    await store.update(task.task_id, status=TaskStatus.CANCELLED)
+    (await store.get(task.task_id)).completed_at = 0.0
+    deleted = await store.delete_expired(ttl_seconds=1.0)
+    assert deleted == 1

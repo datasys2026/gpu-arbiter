@@ -13,6 +13,7 @@ class TaskStore(Protocol):
     async def claim_next(self) -> Task | None: ...
     async def update(self, task_id: str, **fields: object) -> None: ...
     async def queue_depth(self, tenant_id: str) -> int: ...
+    async def list_tasks(self, tenant_id: str, status: TaskStatus | None = None) -> list[Task]: ...
     async def active_counts(self) -> dict: ...
     async def delete_expired(self, ttl_seconds: float) -> int: ...
 
@@ -59,7 +60,8 @@ class InMemoryTaskStore:
         for key, value in fields.items():
             setattr(task, key, value)
         new_status = fields.get("status")
-        if new_status in (TaskStatus.DONE, TaskStatus.FAILED) and task.completed_at is None:
+        _terminal = (TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.CANCELLED)
+        if new_status in _terminal and task.completed_at is None:
             task.completed_at = time.monotonic()
 
     async def queue_depth(self, tenant_id: str) -> int:
@@ -68,6 +70,12 @@ class InMemoryTaskStore:
             for t in self._tasks.values()
             if t.tenant_id == tenant_id and t.status == TaskStatus.PENDING
         )
+
+    async def list_tasks(self, tenant_id: str, status: TaskStatus | None = None) -> list[Task]:
+        return [
+            t for t in self._tasks.values()
+            if t.tenant_id == tenant_id and (status is None or t.status == status)
+        ]
 
     async def delete_expired(self, ttl_seconds: float) -> int:
         cutoff = time.monotonic() - ttl_seconds
