@@ -2,8 +2,8 @@ import pytest
 import respx
 from httpx import Response
 
-from gpu_arbiter.config import HookConfig
-from gpu_arbiter.lifecycle import LifecycleRunner
+from gpu_arbiter.config import HealthConfig, HookConfig
+from gpu_arbiter.lifecycle import LifecycleRunner, UpstreamNotReadyError
 
 
 @pytest.mark.anyio
@@ -94,3 +94,74 @@ async def test_lifecycle_runner_can_ignore_hook_errors():
 
     assert route.called
 
+
+@pytest.mark.anyio
+@respx.mock
+async def test_wait_until_ready_returns_immediately_when_healthy():
+    respx.get("http://image-api:8003/health").mock(return_value=Response(200))
+    runner = LifecycleRunner()
+    sleeps: list[float] = []
+
+    async def _sleep(s: float) -> None:
+        sleeps.append(s)
+
+    await runner.wait_until_ready(
+        HealthConfig(url="http://image-api:8003/health", wait_timeout_seconds=30),
+        sleep_fn=_sleep,
+    )
+
+    assert sleeps == []
+
+
+@pytest.mark.anyio
+@respx.mock
+async def test_wait_until_ready_polls_until_service_recovers():
+    call_count = 0
+
+    def _handler(request):
+        nonlocal call_count
+        call_count += 1
+        if call_count < 3:
+            return Response(503)
+        return Response(200)
+
+    respx.get("http://image-api:8003/health").mock(side_effect=_handler)
+    runner = LifecycleRunner()
+    sleeps: list[float] = []
+    times = iter([0.0, 1.0, 2.0, 3.0, 4.0])
+
+    async def _sleep(s: float) -> None:
+        sleeps.append(s)
+
+    await runner.wait_until_ready(
+        HealthConfig(url="http://image-api:8003/health", wait_timeout_seconds=60),
+        sleep_fn=_sleep,
+        now_fn=lambda: next(times),
+    )
+
+    assert call_count == 3
+    assert len(sleeps) == 2
+
+
+@pytest.mark.anyio
+@respx.mock
+async def test_wait_until_ready_raises_after_timeout():
+    respx.get("http://image-api:8003/health").mock(return_value=Response(503))
+    runner = LifecycleRunner()
+    times = iter([0.0, 5.0, 200.0])
+
+    async def _sleep(s: float) -> None:
+        pass
+
+    with pytest.raises(UpstreamNotReadyError):
+        await runner.wait_until_ready(
+            HealthConfig(url="http://image-api:8003/health", wait_timeout_seconds=10),
+            sleep_fn=_sleep,
+            now_fn=lambda: next(times),
+        )
+
+
+@pytest.mark.anyio
+async def test_wait_until_ready_skips_when_health_is_none():
+    runner = LifecycleRunner()
+    await runner.wait_until_ready(None)

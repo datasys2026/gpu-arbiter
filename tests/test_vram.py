@@ -1,3 +1,5 @@
+import pytest
+
 from gpu_arbiter.vram import InsufficientVRAMError, StaticVRAMProbe, wait_for_vram_available
 
 
@@ -18,16 +20,19 @@ def test_vram_probe_raises_when_insufficient():
         assert exc.required_mb == 8000
 
 
-def test_wait_for_vram_available_returns_immediately_when_already_free():
+async def test_wait_for_vram_available_returns_immediately_when_already_free():
     probe = StaticVRAMProbe(free_mb=20000)
     sleeps: list[float] = []
 
-    wait_for_vram_available(probe, required_mb=18000, timeout_seconds=60, sleep_fn=lambda s: sleeps.append(s))
+    async def _sleep(s: float) -> None:
+        sleeps.append(s)
+
+    await wait_for_vram_available(probe, required_mb=18000, timeout_seconds=60, sleep_fn=_sleep)
 
     assert sleeps == []
 
 
-def test_wait_for_vram_available_retries_until_vram_freed():
+async def test_wait_for_vram_available_retries_until_vram_freed():
     free_values = iter([1000, 1000, 20000])
 
     class DynamicProbe:
@@ -37,29 +42,34 @@ def test_wait_for_vram_available_retries_until_vram_freed():
     sleeps: list[float] = []
     times = iter([0.0, 0.0, 0.0, 0.0, 1000.0])
 
-    wait_for_vram_available(
+    async def _sleep(s: float) -> None:
+        sleeps.append(s)
+
+    await wait_for_vram_available(
         DynamicProbe(),
         required_mb=18000,
         timeout_seconds=500,
-        sleep_fn=lambda s: sleeps.append(s),
+        sleep_fn=_sleep,
         now_fn=lambda: next(times),
     )
 
     assert len(sleeps) == 2
 
 
-def test_wait_for_vram_available_raises_on_timeout():
+async def test_wait_for_vram_available_raises_on_timeout():
     probe = StaticVRAMProbe(free_mb=1000)
     times = iter([0.0, 0.0, 100.0])
 
-    try:
-        wait_for_vram_available(
+    async def _sleep(s: float) -> None:
+        pass
+
+    with pytest.raises(InsufficientVRAMError) as exc_info:
+        await wait_for_vram_available(
             probe,
             required_mb=18000,
             timeout_seconds=10,
-            sleep_fn=lambda s: None,
+            sleep_fn=_sleep,
             now_fn=lambda: next(times),
         )
-        raise AssertionError("expected InsufficientVRAMError")
-    except InsufficientVRAMError as exc:
-        assert exc.required_mb == 18000
+
+    assert exc_info.value.required_mb == 18000

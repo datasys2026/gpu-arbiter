@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 
 
 class InsufficientVRAMError(RuntimeError):
@@ -47,15 +47,17 @@ class NVMLVRAMProbe:
         self._pynvml.nvmlShutdown()
 
 
-def wait_for_vram_available(
+async def wait_for_vram_available(
     probe: StaticVRAMProbe,
     required_mb: int,
     timeout_seconds: float = 60,
     poll_interval: float = 2,
-    sleep_fn: Callable[[float], None] | None = None,
+    sleep_fn: Callable[[float], Awaitable[None]] | None = None,
     now_fn: Callable[[], float] | None = None,
 ) -> None:
-    sleep = sleep_fn if sleep_fn is not None else time.sleep
+    import anyio
+
+    sleep = sleep_fn if sleep_fn is not None else anyio.sleep
     now = now_fn if now_fn is not None else time.monotonic
     deadline = now() + timeout_seconds
     while True:
@@ -64,4 +66,4 @@ def wait_for_vram_available(
             return
         if now() >= deadline:
             raise InsufficientVRAMError(free_mb=free_mb, required_mb=required_mb)
-        sleep(poll_interval)
+        await sleep(poll_interval)

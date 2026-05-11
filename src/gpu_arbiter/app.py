@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse, Response
 
 from gpu_arbiter.config import ArbiterConfig, ModelConfig
 from gpu_arbiter.errors import error_payload
-from gpu_arbiter.lifecycle import LifecycleRunner
+from gpu_arbiter.lifecycle import LifecycleRunner, UpstreamNotReadyError
 from gpu_arbiter.locking import GPUBusyError, InMemoryGPULock
 from gpu_arbiter.queue.models import RetriableError, Task, TaskStatus
 from gpu_arbiter.queue.store import InMemoryTaskStore, TaskStore
@@ -281,7 +281,8 @@ def create_app(
             with lock.acquire(holder):
                 _log_event("gpu_lock_acquired", request_id=request_id, holder=holder)
                 await lifecycle.run_hooks(model.unload, ignore_errors=True)
-                wait_for_vram_available(probe, model.required_vram_mb)
+                await wait_for_vram_available(probe, model.required_vram_mb)
+                await lifecycle.wait_until_ready(model.health)
                 response = await _proxy_request(model, route, request, body)
                 if config.gpu.cooldown_seconds:
                     await asyncio.sleep(config.gpu.cooldown_seconds)
@@ -322,6 +323,24 @@ def create_app(
                     True,
                     free_mb=exc.free_mb,
                     required_mb=exc.required_mb,
+                ),
+            )
+        except UpstreamNotReadyError as exc:
+            _log_event(
+                "upstream_not_ready",
+                request_id=request_id,
+                route=route,
+                model_id=model_id,
+                url=exc.url,
+                timeout=exc.timeout,
+            )
+            return JSONResponse(
+                status_code=503,
+                content=error_payload(
+                    "upstream_not_ready",
+                    f"Upstream service did not become ready within {exc.timeout}s",
+                    True,
+                    url=exc.url,
                 ),
             )
         except httpx.HTTPError as exc:
@@ -414,7 +433,8 @@ def _make_execute_fn(
         try:
             with lock.acquire(task.model_id):
                 await lifecycle.run_hooks(model.unload, ignore_errors=True)
-                wait_for_vram_available(probe, model.required_vram_mb)
+                await wait_for_vram_available(probe, model.required_vram_mb)
+                await lifecycle.wait_until_ready(model.health)
                 return await _proxy_request_raw(model, task.route, task.method, task.headers, task.body)
         except GPUBusyError as exc:
             raise RetriableError(f"GPU busy, held by {exc.holder}") from exc

@@ -3,7 +3,7 @@ from fastapi.testclient import TestClient
 from httpx import Response
 
 from gpu_arbiter.app import create_app
-from gpu_arbiter.config import ArbiterConfig, GPUConfig, HookConfig, ModelConfig
+from gpu_arbiter.config import ArbiterConfig, GPUConfig, HealthConfig, HookConfig, ModelConfig
 from gpu_arbiter.locking import InMemoryGPULock
 from gpu_arbiter.vram import StaticVRAMProbe
 
@@ -140,6 +140,71 @@ def test_proxy_ignores_unload_hook_errors():
 
     assert response.status_code == 200
     assert response.json() == {"ok": True}
+
+
+@respx.mock
+def test_proxy_waits_for_upstream_health_before_forwarding():
+    calls = []
+
+    def record(name):
+        def _handler(request):
+            calls.append(name)
+            return Response(200, json={"ok": True})
+        return _handler
+
+    respx.get("http://image-api:8003/health").mock(side_effect=record("health"))
+    respx.post("http://image-api:8003/v1/images/generations").mock(side_effect=record("proxy"))
+
+    config = ArbiterConfig(
+        gpu=GPUConfig(index=0),
+        models={
+            "aiark/z-image-turbo": ModelConfig(
+                route="/v1/images/generations",
+                upstream="http://image-api:8003",
+                required_vram_mb=12000,
+                health=HealthConfig(url="http://image-api:8003/health", wait_timeout_seconds=30),
+            )
+        },
+    )
+    client = TestClient(create_app(config, gpu_lock=InMemoryGPULock(), vram_probe=StaticVRAMProbe(16000)))
+
+    response = client.post(
+        "/v1/images/generations",
+        json={"model": "aiark/z-image-turbo", "prompt": "a robot"},
+    )
+
+    assert response.status_code == 200
+    assert calls == ["health", "proxy"]
+
+
+@respx.mock
+def test_proxy_returns_503_when_upstream_health_times_out():
+    respx.get("http://image-api:8003/health").mock(return_value=Response(503))
+
+    config = ArbiterConfig(
+        gpu=GPUConfig(index=0),
+        models={
+            "aiark/z-image-turbo": ModelConfig(
+                route="/v1/images/generations",
+                upstream="http://image-api:8003",
+                required_vram_mb=0,
+                health=HealthConfig(
+                    url="http://image-api:8003/health",
+                    wait_timeout_seconds=0.01,
+                    poll_interval_seconds=0.001,
+                ),
+            )
+        },
+    )
+    client = TestClient(create_app(config, gpu_lock=InMemoryGPULock(), vram_probe=StaticVRAMProbe(16000)))
+
+    response = client.post(
+        "/v1/images/generations",
+        json={"model": "aiark/z-image-turbo", "prompt": "a robot"},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["error"]["type"] == "upstream_not_ready"
 
 
 def test_admin_unload_is_blocked_by_gpu_lock():

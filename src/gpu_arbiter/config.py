@@ -27,6 +27,16 @@ class HookConfig(BaseModel):
     timeout_seconds: float = Field(default=30, gt=0)
 
 
+class HealthConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["http"] = "http"
+    url: str
+    method: str = "GET"
+    wait_timeout_seconds: float = Field(default=180, gt=0)
+    poll_interval_seconds: float = Field(default=2.0, gt=0)
+
+
 class ModelConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -34,6 +44,7 @@ class ModelConfig(BaseModel):
     upstream: str
     uses_gpu: bool = True
     required_vram_mb: int = Field(default=0, ge=0)
+    health: HealthConfig | None = None
     unload: HookConfig | list[HookConfig] | None = None
 
 

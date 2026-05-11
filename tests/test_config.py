@@ -52,6 +52,29 @@ models:
     assert unload.headers["Authorization"] == "Bearer test-key"
 
 
+def test_load_config_parses_health_config(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+models:
+  aiark/z-image-turbo:
+    route: /v1/images/generations
+    upstream: http://image-api:8003
+    health:
+      url: http://image-api:8003/health
+      wait_timeout_seconds: 120
+""",
+    )
+
+    config = load_config(config_path)
+
+    health = config.models["aiark/z-image-turbo"].health
+    assert health is not None
+    assert health.url == "http://image-api:8003/health"
+    assert health.method == "GET"
+    assert health.wait_timeout_seconds == 120
+
+
 def test_load_config_accepts_multiple_unload_hooks_with_json_body(tmp_path):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
