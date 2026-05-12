@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import time
@@ -190,7 +191,8 @@ def create_app(
         if task.status in (TaskStatus.DONE, TaskStatus.FAILED):
             result = {
                 "status_code": task.result_status,
-                "body": task.result_body.decode(errors="replace") if task.result_body else None,
+                "body": base64.b64encode(task.result_body).decode("ascii") if task.result_body else None,
+                "body_encoding": "base64",
                 "headers": task.result_headers,
                 "error": task.error,
             }

@@ -11,11 +11,11 @@ dependencies = [
     "pydantic>=2.7",
     "pyyaml>=6.0",
     "uvicorn[standard]>=0.30",
+    "aiosqlite>=0.20",
 ]
 
 [project.optional-dependencies]
 nvml = ["nvidia-ml-py>=12.560"]
-queue = ["aiosqlite>=0.20"]
 test = [
     "pytest>=8.2",
     "pytest-asyncio>=0.23",
