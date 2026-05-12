@@ -15,6 +15,7 @@ class GPUConfig(BaseModel):
 
     index: int = 0
     cooldown_seconds: float = 0
+    vram_headroom_mb: int = Field(default=0, ge=0)
 
 
 class HookConfig(BaseModel):
@@ -48,6 +49,7 @@ class ModelConfig(BaseModel):
     max_proxy_seconds: float | None = Field(default=None, gt=0)
     health: HealthConfig | None = None
     unload: HookConfig | list[HookConfig] | None = None
+    cleanup: HookConfig | list[HookConfig] | None = None
 
 
 class ArbiterConfig(BaseModel):

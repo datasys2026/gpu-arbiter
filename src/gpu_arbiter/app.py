@@ -293,9 +293,12 @@ def create_app(
                 with lock.acquire(holder):
                     _log_event("gpu_lock_acquired", request_id=request_id, holder=holder)
                     await lifecycle.run_hooks(model.unload, ignore_errors=True)
-                    await wait_for_vram_available(probe, model.required_vram_mb)
+                    await wait_for_vram_available(probe, model.required_vram_mb + config.gpu.vram_headroom_mb)
                     await lifecycle.wait_until_ready(model.health)
-                    response = await _proxy_request(model, route, request, body)
+                    try:
+                        response = await _proxy_request(model, route, request, body)
+                    finally:
+                        await lifecycle.run_hooks(model.cleanup, ignore_errors=True)
                     if config.gpu.cooldown_seconds:
                         await asyncio.sleep(config.gpu.cooldown_seconds)
                     _log_event(
@@ -462,9 +465,12 @@ def _make_execute_fn(
             async with _optional_timeout(model.max_proxy_seconds):
                 with lock.acquire(task.model_id):
                     await lifecycle.run_hooks(model.unload, ignore_errors=True)
-                    await wait_for_vram_available(probe, model.required_vram_mb)
+                    await wait_for_vram_available(probe, model.required_vram_mb + config.gpu.vram_headroom_mb)
                     await lifecycle.wait_until_ready(model.health)
-                    return await _proxy_request_raw(model, task.route, task.method, task.headers, task.body)
+                    try:
+                        return await _proxy_request_raw(model, task.route, task.method, task.headers, task.body)
+                    finally:
+                        await lifecycle.run_hooks(model.cleanup, ignore_errors=True)
         except GPUBusyError as exc:
             raise RetriableError(f"GPU busy, held by {exc.holder}") from exc
         except TimeoutError as exc:

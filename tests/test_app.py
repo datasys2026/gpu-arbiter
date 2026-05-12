@@ -283,3 +283,159 @@ def test_gpu_lock_is_released_after_proxy_timeout():
 
     assert response.status_code == 504
     assert lock.holder is None
+
+
+@respx.mock
+def test_cleanup_hooks_run_after_successful_request():
+    calls = []
+
+    def record(name, status=200):
+        def _handler(request):
+            calls.append(name)
+            return Response(status, json={"ok": True})
+        return _handler
+
+    respx.post("http://image-api:8003/v1/images/generations").mock(side_effect=record("proxy"))
+    respx.post("http://image-api:8003/admin/cleanup").mock(side_effect=record("cleanup"))
+
+    config = ArbiterConfig(
+        gpu=GPUConfig(index=0),
+        models={
+            "aiark/z-image-turbo": ModelConfig(
+                route="/v1/images/generations",
+                upstream="http://image-api:8003",
+                required_vram_mb=0,
+                cleanup=HookConfig(type="http", url="http://image-api:8003/admin/cleanup"),
+            )
+        },
+    )
+    client = TestClient(create_app(config, gpu_lock=InMemoryGPULock(), vram_probe=StaticVRAMProbe(16000)))
+
+    response = client.post(
+        "/v1/images/generations",
+        json={"model": "aiark/z-image-turbo", "prompt": "a robot"},
+    )
+
+    assert response.status_code == 200
+    assert calls == ["proxy", "cleanup"]
+
+
+@respx.mock
+def test_cleanup_hooks_run_after_failed_upstream_response():
+    calls = []
+
+    def record(name, status=200):
+        def _handler(request):
+            calls.append(name)
+            return Response(status, json={"ok": True})
+        return _handler
+
+    respx.post("http://image-api:8003/v1/images/generations").mock(side_effect=record("proxy", 500))
+    respx.post("http://image-api:8003/admin/cleanup").mock(side_effect=record("cleanup"))
+
+    config = ArbiterConfig(
+        gpu=GPUConfig(index=0),
+        models={
+            "aiark/z-image-turbo": ModelConfig(
+                route="/v1/images/generations",
+                upstream="http://image-api:8003",
+                required_vram_mb=0,
+                cleanup=HookConfig(type="http", url="http://image-api:8003/admin/cleanup"),
+            )
+        },
+    )
+    client = TestClient(create_app(config, gpu_lock=InMemoryGPULock(), vram_probe=StaticVRAMProbe(16000)))
+
+    response = client.post(
+        "/v1/images/generations",
+        json={"model": "aiark/z-image-turbo", "prompt": "a robot"},
+    )
+
+    assert response.status_code == 500
+    assert calls == ["proxy", "cleanup"]
+
+
+@respx.mock
+def test_cleanup_hooks_run_after_proxy_timeout():
+    import anyio
+
+    calls = []
+
+    async def slow_upstream(request):
+        await anyio.sleep(5)
+        return Response(200, json={"ok": True})
+
+    def record(name):
+        def _handler(request):
+            calls.append(name)
+            return Response(200, json={"ok": True})
+        return _handler
+
+    respx.post("http://image-api:8003/v1/images/generations").mock(side_effect=slow_upstream)
+    respx.post("http://image-api:8003/admin/cleanup").mock(side_effect=record("cleanup"))
+
+    config = ArbiterConfig(
+        gpu=GPUConfig(index=0),
+        models={
+            "aiark/z-image-turbo": ModelConfig(
+                route="/v1/images/generations",
+                upstream="http://image-api:8003",
+                required_vram_mb=0,
+                max_proxy_seconds=0.1,
+                cleanup=HookConfig(type="http", url="http://image-api:8003/admin/cleanup"),
+            )
+        },
+    )
+    client = TestClient(create_app(config, gpu_lock=InMemoryGPULock(), vram_probe=StaticVRAMProbe(16000)))
+
+    response = client.post("/v1/images/generations", json={"model": "aiark/z-image-turbo", "prompt": "test"})
+
+    assert response.status_code == 504
+    assert "cleanup" in calls
+
+
+def test_vram_headroom_mb_blocks_request_when_combined_exceeds_free():
+    config = ArbiterConfig(
+        gpu=GPUConfig(index=0, vram_headroom_mb=2000),
+        models={
+            "aiark/z-image-turbo": ModelConfig(
+                route="/v1/images/generations",
+                upstream="http://image-api:8003",
+                required_vram_mb=10000,
+            )
+        },
+    )
+    client = TestClient(create_app(config, gpu_lock=InMemoryGPULock(), vram_probe=StaticVRAMProbe(11000)))
+
+    response = client.post(
+        "/v1/images/generations",
+        json={"model": "aiark/z-image-turbo", "prompt": "a robot"},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["error"]["type"] == "insufficient_vram"
+
+
+@respx.mock
+def test_vram_headroom_mb_allows_request_when_combined_fits():
+    respx.post("http://image-api:8003/v1/images/generations").mock(
+        return_value=Response(200, json={"ok": True})
+    )
+    config = ArbiterConfig(
+        gpu=GPUConfig(index=0, vram_headroom_mb=2000),
+        models={
+            "aiark/z-image-turbo": ModelConfig(
+                route="/v1/images/generations",
+                upstream="http://image-api:8003",
+                required_vram_mb=10000,
+            )
+        },
+    )
+    client = TestClient(create_app(config, gpu_lock=InMemoryGPULock(), vram_probe=StaticVRAMProbe(12000)))
+
+    response = client.post(
+        "/v1/images/generations",
+        json={"model": "aiark/z-image-turbo", "prompt": "a robot"},
+    )
+
+    assert response.status_code == 200
