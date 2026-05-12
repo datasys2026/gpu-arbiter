@@ -226,3 +226,60 @@ def test_admin_unload_is_blocked_by_gpu_lock():
 
     assert response.status_code == 409
     assert response.json()["error"]["type"] == "gpu_busy"
+
+
+@respx.mock
+def test_proxy_returns_504_when_upstream_exceeds_max_proxy_seconds():
+    import anyio
+
+    async def slow_upstream(request):
+        await anyio.sleep(5)
+        return Response(200, json={"ok": True})
+
+    respx.post("http://image-api:8003/v1/images/generations").mock(side_effect=slow_upstream)
+    config = ArbiterConfig(
+        gpu=GPUConfig(index=0),
+        models={
+            "aiark/z-image-turbo": ModelConfig(
+                route="/v1/images/generations",
+                upstream="http://image-api:8003",
+                required_vram_mb=0,
+                max_proxy_seconds=0.1,
+            )
+        },
+    )
+    client = TestClient(create_app(config, gpu_lock=InMemoryGPULock(), vram_probe=StaticVRAMProbe(16000)))
+
+    response = client.post("/v1/images/generations", json={"model": "aiark/z-image-turbo", "prompt": "test"})
+
+    assert response.status_code == 504
+    assert response.json()["error"]["type"] == "request_timeout"
+
+
+@respx.mock
+def test_gpu_lock_is_released_after_proxy_timeout():
+    import anyio
+
+    async def slow_upstream(request):
+        await anyio.sleep(5)
+        return Response(200, json={"ok": True})
+
+    respx.post("http://image-api:8003/v1/images/generations").mock(side_effect=slow_upstream)
+    config = ArbiterConfig(
+        gpu=GPUConfig(index=0),
+        models={
+            "aiark/z-image-turbo": ModelConfig(
+                route="/v1/images/generations",
+                upstream="http://image-api:8003",
+                required_vram_mb=0,
+                max_proxy_seconds=0.1,
+            )
+        },
+    )
+    lock = InMemoryGPULock()
+    client = TestClient(create_app(config, gpu_lock=lock, vram_probe=StaticVRAMProbe(16000)))
+
+    response = client.post("/v1/images/generations", json={"model": "aiark/z-image-turbo", "prompt": "test"})
+
+    assert response.status_code == 504
+    assert lock.holder is None

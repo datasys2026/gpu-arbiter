@@ -45,6 +45,7 @@ class ModelConfig(BaseModel):
     upstream: str
     uses_gpu: bool = True
     required_vram_mb: int = Field(default=0, ge=0)
+    max_proxy_seconds: float | None = Field(default=None, gt=0)
     health: HealthConfig | None = None
     unload: HookConfig | list[HookConfig] | None = None
 
