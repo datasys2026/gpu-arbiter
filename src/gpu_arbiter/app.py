@@ -71,6 +71,7 @@ def create_app(
                 tg.cancel_scope.cancel()
         finally:
             await store.close()
+            probe.close()
 
     app = FastAPI(title="GPU Arbiter", lifespan=lifespan)
 
@@ -122,9 +123,7 @@ def create_app(
         body = await request.body()
         model_id = _extract_model_id(request, body)
         route = "/queue"
-        model = _resolve_model(config, route, model_id) if model_id else None
-        if model is None and model_id:
-            model = config.models.get(model_id)
+        model = config.models.get(model_id) if model_id else None
         if model is None:
             return JSONResponse(
                 status_code=404,
@@ -151,7 +150,7 @@ def create_app(
             headers=dict(request.headers),
             body=body,
             status=TaskStatus.PENDING,
-            created_at=time.monotonic(),
+            created_at=time.time(),
         )
         await store.create(task)
         return JSONResponse(status_code=202, content={"task_id": task.task_id, "status": "pending"})

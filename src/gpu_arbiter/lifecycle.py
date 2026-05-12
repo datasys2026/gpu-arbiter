@@ -9,6 +9,8 @@ import httpx
 
 from gpu_arbiter.config import HealthConfig, HookConfig
 
+_HEALTH_REQUEST_TIMEOUT = 5.0
+
 
 class UpstreamNotReadyError(RuntimeError):
     def __init__(self, url: str, timeout: float) -> None:
@@ -63,7 +65,7 @@ class LifecycleRunner:
         deadline = now() + health.wait_timeout_seconds
         while True:
             try:
-                async with httpx.AsyncClient(timeout=5) as client:
+                async with httpx.AsyncClient(timeout=_HEALTH_REQUEST_TIMEOUT) as client:
                     resp = await client.request(health.method, health.url)
                     if resp.is_success:
                         self._log("health_poll_ok", url=health.url)

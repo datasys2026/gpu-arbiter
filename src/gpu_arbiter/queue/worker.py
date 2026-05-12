@@ -11,7 +11,7 @@ class QueueWorker:
     def __init__(
         self,
         store: TaskStore,
-        execute_fn: Callable[[Task], Awaitable[tuple[int, bytes, dict]]] | None,
+        execute_fn: Callable[[Task], Awaitable[tuple[int, bytes, dict]]],
         poll_interval: float = 1.0,
     ) -> None:
         self._store = store

@@ -70,7 +70,7 @@ class InMemoryTaskStore:
         new_status = fields.get("status")
         _terminal = (TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.CANCELLED)
         if new_status in _terminal and task.completed_at is None:
-            task.completed_at = time.monotonic()
+            task.completed_at = time.time()
 
     async def queue_depth(self, tenant_id: str) -> int:
         return sum(
@@ -86,7 +86,7 @@ class InMemoryTaskStore:
         ]
 
     async def delete_expired(self, ttl_seconds: float) -> int:
-        cutoff = time.monotonic() - ttl_seconds
+        cutoff = time.time() - ttl_seconds
         expired = [
             t.task_id
             for t in self._tasks.values()

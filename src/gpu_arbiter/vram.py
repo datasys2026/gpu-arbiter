@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Awaitable, Callable
+from typing import Protocol
 
 
 class InsufficientVRAMError(RuntimeError):
@@ -11,6 +12,11 @@ class InsufficientVRAMError(RuntimeError):
         self.required_mb = required_mb
 
 
+class VRAMProbe(Protocol):
+    def get_free_mb(self) -> int: ...
+    def close(self) -> None: ...
+
+
 class StaticVRAMProbe:
     def __init__(self, free_mb: int) -> None:
         self._free_mb = free_mb
@@ -18,10 +24,8 @@ class StaticVRAMProbe:
     def get_free_mb(self) -> int:
         return self._free_mb
 
-    def ensure_available(self, required_mb: int) -> None:
-        free_mb = self.get_free_mb()
-        if free_mb < required_mb:
-            raise InsufficientVRAMError(free_mb=free_mb, required_mb=required_mb)
+    def close(self) -> None:
+        pass
 
 
 class NVMLVRAMProbe:
@@ -38,17 +42,12 @@ class NVMLVRAMProbe:
         info = self._pynvml.nvmlDeviceGetMemoryInfo(self._handle)
         return int(info.free // (1024 * 1024))
 
-    def ensure_available(self, required_mb: int) -> None:
-        free_mb = self.get_free_mb()
-        if free_mb < required_mb:
-            raise InsufficientVRAMError(free_mb=free_mb, required_mb=required_mb)
-
     def close(self) -> None:
         self._pynvml.nvmlShutdown()
 
 
 async def wait_for_vram_available(
-    probe: StaticVRAMProbe,
+    probe: VRAMProbe,
     required_mb: int,
     timeout_seconds: float = 60,
     poll_interval: float = 2,

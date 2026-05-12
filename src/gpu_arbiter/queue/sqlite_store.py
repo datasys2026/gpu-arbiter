@@ -29,6 +29,8 @@ CREATE TABLE IF NOT EXISTS metadata (
     value TEXT
 );
 INSERT OR IGNORE INTO metadata VALUES ('last_tenant', NULL);
+CREATE INDEX IF NOT EXISTS idx_tasks_tenant_status ON tasks(tenant_id, status);
+CREATE INDEX IF NOT EXISTS idx_tasks_completed_at ON tasks(completed_at);
 """
 
 _TERMINAL = (TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.CANCELLED)
@@ -130,7 +132,7 @@ class SQLiteTaskStore:
         new_status = fields.get("status")
         if isinstance(new_status, TaskStatus) and new_status in _TERMINAL:
             if "completed_at" not in fields:
-                fields = {**fields, "completed_at": time.monotonic()}
+                fields = {**fields, "completed_at": time.time()}
 
         col_map = {
             "status": "status",
@@ -194,7 +196,7 @@ class SQLiteTaskStore:
         return {"pending": pending, "running": running, "tenants": tenants}
 
     async def delete_expired(self, ttl_seconds: float) -> int:
-        cutoff = time.monotonic() - ttl_seconds
+        cutoff = time.time() - ttl_seconds
         async with self._db.execute(
             "DELETE FROM tasks WHERE completed_at IS NOT NULL AND completed_at <= ?", (cutoff,)
         ) as cur:
