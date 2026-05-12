@@ -75,6 +75,42 @@ models:
     assert health.wait_timeout_seconds == 120
 
 
+def test_load_config_raises_when_env_var_missing_in_hook_header(tmp_path, monkeypatch):
+    monkeypatch.delenv("MISSING_API_KEY", raising=False)
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+models:
+  test/model:
+    route: /v1/test
+    upstream: http://svc:8000
+    unload:
+      - url: http://svc:8000/admin/unload
+        headers:
+          Authorization: Bearer ${MISSING_API_KEY}
+""",
+    )
+
+    with pytest.raises(ValueError, match=r"\$\{MISSING_API_KEY\}"):
+        load_config(config_path)
+
+
+def test_load_config_raises_when_env_var_missing_in_upstream(tmp_path, monkeypatch):
+    monkeypatch.delenv("UPSTREAM_HOST", raising=False)
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+models:
+  test/model:
+    route: /v1/test
+    upstream: http://${UPSTREAM_HOST}:8000
+""",
+    )
+
+    with pytest.raises(ValueError, match=r"\$\{UPSTREAM_HOST\}"):
+        load_config(config_path)
+
+
 def test_load_config_accepts_multiple_unload_hooks_with_json_body(tmp_path):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(

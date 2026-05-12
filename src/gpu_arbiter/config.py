@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+import re
 from typing import Any
 from typing import Literal
 
@@ -61,6 +62,9 @@ class ArbiterConfig(BaseModel):
         return self
 
 
+_UNEXPANDED_RE = re.compile(r"\$\{[^}]+\}")
+
+
 def _expand_environment(value: Any) -> Any:
     if isinstance(value, str):
         return os.path.expandvars(value)
@@ -71,8 +75,26 @@ def _expand_environment(value: Any) -> Any:
     return value
 
 
+def _assert_no_unexpanded(value: Any, path: str = "") -> None:
+    if isinstance(value, str):
+        m = _UNEXPANDED_RE.search(value)
+        if m:
+            raise ValueError(
+                f"Unresolved env var {m.group()!r} in config"
+                + (f" at {path!r}" if path else "")
+                + ". Set the environment variable before starting."
+            )
+    elif isinstance(value, list):
+        for i, item in enumerate(value):
+            _assert_no_unexpanded(item, f"{path}[{i}]")
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            _assert_no_unexpanded(item, f"{path}.{key}" if path else key)
+
+
 def load_config(path: str | pathlib.Path) -> ArbiterConfig:
     raw = yaml.safe_load(pathlib.Path(path).read_text()) or {}
     raw = {k: v for k, v in raw.items() if not k.startswith("x-")}
     raw = _expand_environment(raw)
+    _assert_no_unexpanded(raw)
     return ArbiterConfig.model_validate(raw)
