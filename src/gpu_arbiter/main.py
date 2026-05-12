@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 
 import uvicorn
 
@@ -19,7 +20,17 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _configure_logging() -> None:
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    logger = logging.getLogger("gpu_arbiter")
+    logger.setLevel(logging.INFO)
+    logger.addHandler(handler)
+    logger.propagate = False
+
+
 def main() -> None:
+    _configure_logging()
     args = build_parser().parse_args()
     config = load_config(args.config)
     app = create_app(

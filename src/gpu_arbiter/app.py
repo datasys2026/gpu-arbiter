@@ -83,6 +83,7 @@ def create_app(
             "gpu": {"index": config.gpu.index, "free_mb": probe.get_free_mb()},
             "models": sorted(config.models),
             "holder": lock.holder,
+            "held_seconds": lock.held_seconds,
         }
 
     @app.get("/models")
