@@ -291,11 +291,13 @@ def create_app(
                 )
 
         t0 = time.perf_counter()
+        _acquired = False
         try:
             holder = model_id or route
             _log_event("gpu_lock_acquire_attempt", request_id=request_id, holder=holder)
             async with _optional_timeout(model.max_proxy_seconds):
                 with lock.acquire(holder):
+                    _acquired = True
                     _log_event("gpu_lock_acquired", request_id=request_id, holder=holder)
 
                     _log_event("phase_unload_start", request_id=request_id, holder=holder)
@@ -314,10 +316,7 @@ def create_app(
                         _log_event("phase_health_ready", request_id=request_id, elapsed_ms=_elapsed_ms(t0))
 
                     _log_event("phase_proxy_start", request_id=request_id)
-                    try:
-                        response = await _proxy_request(model, route, request, body)
-                    finally:
-                        await lifecycle.run_hooks(model.cleanup, ignore_errors=True)
+                    response = await _proxy_request(model, route, request, body)
                     _log_event("phase_proxy_done", request_id=request_id, status_code=response.status_code, elapsed_ms=_elapsed_ms(t0))
 
                     if config.gpu.cooldown_seconds:
@@ -414,6 +413,9 @@ def create_app(
                     True,
                 ),
             )
+        finally:
+            if _acquired:
+                await lifecycle.run_hooks(model.cleanup, ignore_errors=True)
 
     return app
 
@@ -485,22 +487,24 @@ def _make_execute_fn(
             raise ValueError(f"model {task.model_id!r} not configured")
         if not model.uses_gpu:
             return await _proxy_request_raw(model, task.route, task.method, task.headers, task.body)
+        _acquired = False
         try:
             async with _optional_timeout(model.max_proxy_seconds):
                 with lock.acquire(task.model_id):
+                    _acquired = True
                     await lifecycle.run_hooks(model.unload, ignore_errors=True)
                     await wait_for_vram_available(probe, model.required_vram_mb + config.gpu.vram_headroom_mb)
                     await lifecycle.wait_until_ready(model.health)
-                    try:
-                        return await _proxy_request_raw(model, task.route, task.method, task.headers, task.body)
-                    finally:
-                        await lifecycle.run_hooks(model.cleanup, ignore_errors=True)
+                    return await _proxy_request_raw(model, task.route, task.method, task.headers, task.body)
         except GPUBusyError as exc:
             raise RetriableError(f"GPU busy, held by {exc.holder}") from exc
         except TimeoutError as exc:
             raise RuntimeError(
                 f"Upstream did not respond within {model.max_proxy_seconds}s"
             ) from exc
+        finally:
+            if _acquired:
+                await lifecycle.run_hooks(model.cleanup, ignore_errors=True)
 
     return execute
 
