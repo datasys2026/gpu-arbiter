@@ -39,6 +39,10 @@ def _log_event(event: str, **fields: object) -> None:
     LOGGER.info(json.dumps({"event": event, **fields}, ensure_ascii=False, default=str))
 
 
+def _elapsed_ms(t0: float) -> int:
+    return round((time.perf_counter() - t0) * 1000)
+
+
 def _request_id(request: Request) -> str:
     rid = request.headers.get("x-request-id")
     if rid:
@@ -286,19 +290,36 @@ def create_app(
                     ),
                 )
 
+        t0 = time.perf_counter()
         try:
             holder = model_id or route
             _log_event("gpu_lock_acquire_attempt", request_id=request_id, holder=holder)
             async with _optional_timeout(model.max_proxy_seconds):
                 with lock.acquire(holder):
                     _log_event("gpu_lock_acquired", request_id=request_id, holder=holder)
+
+                    _log_event("phase_unload_start", request_id=request_id, holder=holder)
                     await lifecycle.run_hooks(model.unload, ignore_errors=True)
-                    await wait_for_vram_available(probe, model.required_vram_mb + config.gpu.vram_headroom_mb)
+                    _log_event("phase_unload_done", request_id=request_id, elapsed_ms=_elapsed_ms(t0))
+
+                    required_mb = model.required_vram_mb + config.gpu.vram_headroom_mb
+                    _log_event("phase_vram_wait_start", request_id=request_id, free_mb=probe.get_free_mb(), required_mb=required_mb)
+                    await wait_for_vram_available(probe, required_mb)
+                    _log_event("phase_vram_ready", request_id=request_id, free_mb=probe.get_free_mb(), elapsed_ms=_elapsed_ms(t0))
+
+                    if model.health:
+                        _log_event("phase_health_wait_start", request_id=request_id, url=model.health.url)
                     await lifecycle.wait_until_ready(model.health)
+                    if model.health:
+                        _log_event("phase_health_ready", request_id=request_id, elapsed_ms=_elapsed_ms(t0))
+
+                    _log_event("phase_proxy_start", request_id=request_id)
                     try:
                         response = await _proxy_request(model, route, request, body)
                     finally:
                         await lifecycle.run_hooks(model.cleanup, ignore_errors=True)
+                    _log_event("phase_proxy_done", request_id=request_id, status_code=response.status_code, elapsed_ms=_elapsed_ms(t0))
+
                     if config.gpu.cooldown_seconds:
                         await asyncio.sleep(config.gpu.cooldown_seconds)
                     _log_event(
@@ -319,6 +340,7 @@ def create_app(
                     "GPU is occupied by another generation job",
                     True,
                     holder=exc.holder,
+                    held_seconds=lock.held_seconds,
                 ),
             )
         except TimeoutError:
@@ -364,6 +386,7 @@ def create_app(
                 model_id=model_id,
                 url=exc.url,
                 timeout=exc.timeout,
+                waited_seconds=exc.waited_seconds,
             )
             return JSONResponse(
                 status_code=503,
@@ -372,6 +395,7 @@ def create_app(
                     f"Upstream service did not become ready within {exc.timeout}s",
                     True,
                     url=exc.url,
+                    waited_seconds=exc.waited_seconds,
                 ),
             )
         except httpx.HTTPError as exc:

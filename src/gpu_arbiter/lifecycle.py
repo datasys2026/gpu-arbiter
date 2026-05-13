@@ -13,10 +13,11 @@ _HEALTH_REQUEST_TIMEOUT = 5.0
 
 
 class UpstreamNotReadyError(RuntimeError):
-    def __init__(self, url: str, timeout: float) -> None:
+    def __init__(self, url: str, timeout: float, waited_seconds: float) -> None:
         super().__init__(f"upstream {url!r} not ready after {timeout}s")
         self.url = url
         self.timeout = timeout
+        self.waited_seconds = waited_seconds
 
 
 class LifecycleRunner:
@@ -62,7 +63,8 @@ class LifecycleRunner:
 
         sleep = sleep_fn if sleep_fn is not None else anyio.sleep
         now = now_fn if now_fn is not None else time.monotonic
-        deadline = now() + health.wait_timeout_seconds
+        started_at = now()
+        deadline = started_at + health.wait_timeout_seconds
         while True:
             try:
                 async with httpx.AsyncClient(timeout=_HEALTH_REQUEST_TIMEOUT) as client:
@@ -73,8 +75,12 @@ class LifecycleRunner:
                 self._log("health_poll_fail", url=health.url, status_code=resp.status_code)
             except Exception as exc:
                 self._log("health_poll_error", url=health.url, error=str(exc))
-            if now() >= deadline:
-                raise UpstreamNotReadyError(health.url, health.wait_timeout_seconds)
+            if (t := now()) >= deadline:
+                raise UpstreamNotReadyError(
+                    health.url,
+                    health.wait_timeout_seconds,
+                    waited_seconds=round(t - started_at, 2),
+                )
             await sleep(health.poll_interval_seconds)
 
     async def run_hooks(self, hooks: HookConfig | list[HookConfig] | None, *, ignore_errors: bool = False) -> None:

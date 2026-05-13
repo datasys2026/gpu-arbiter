@@ -1,3 +1,6 @@
+import json
+import logging
+
 import respx
 from fastapi.testclient import TestClient
 from httpx import Response
@@ -6,6 +9,16 @@ from gpu_arbiter.app import create_app
 from gpu_arbiter.config import ArbiterConfig, GPUConfig, HealthConfig, HookConfig, ModelConfig
 from gpu_arbiter.locking import InMemoryGPULock
 from gpu_arbiter.vram import StaticVRAMProbe
+
+
+def _parse_log_events(caplog) -> list[dict]:
+    events = []
+    for r in caplog.records:
+        try:
+            events.append(json.loads(r.getMessage()))
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return events
 
 
 def _app(free_mb: int = 16000):
@@ -439,3 +452,128 @@ def test_vram_headroom_mb_allows_request_when_combined_fits():
     )
 
     assert response.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Phase logs and enriched error responses
+# ---------------------------------------------------------------------------
+
+@respx.mock
+def test_gpu_request_emits_all_phase_logs(caplog):
+    respx.post("http://image-api:8003/v1/images/generations").mock(
+        return_value=Response(200, json={"ok": True})
+    )
+    with caplog.at_level(logging.INFO, logger="gpu_arbiter"):
+        client = TestClient(_app())
+        client.post(
+            "/v1/images/generations",
+            json={"model": "aiark/z-image-turbo", "prompt": "a robot"},
+        )
+
+    events = _parse_log_events(caplog)
+    names = {e["event"] for e in events}
+    assert names >= {
+        "phase_unload_start",
+        "phase_unload_done",
+        "phase_vram_wait_start",
+        "phase_vram_ready",
+        "phase_proxy_start",
+        "phase_proxy_done",
+    }
+
+
+@respx.mock
+def test_phase_proxy_done_includes_elapsed_ms_and_status_code(caplog):
+    respx.post("http://image-api:8003/v1/images/generations").mock(
+        return_value=Response(200, json={"ok": True})
+    )
+    with caplog.at_level(logging.INFO, logger="gpu_arbiter"):
+        client = TestClient(_app())
+        client.post(
+            "/v1/images/generations",
+            json={"model": "aiark/z-image-turbo", "prompt": "a robot"},
+        )
+
+    events = _parse_log_events(caplog)
+    done = next((e for e in events if e["event"] == "phase_proxy_done"), None)
+    assert done is not None
+    assert "elapsed_ms" in done
+    assert done["status_code"] == 200
+
+
+@respx.mock
+def test_phase_vram_wait_start_includes_free_and_required_mb(caplog):
+    respx.post("http://image-api:8003/v1/images/generations").mock(
+        return_value=Response(200, json={"ok": True})
+    )
+    with caplog.at_level(logging.INFO, logger="gpu_arbiter"):
+        client = TestClient(_app(free_mb=16000))
+        client.post(
+            "/v1/images/generations",
+            json={"model": "aiark/z-image-turbo", "prompt": "a robot"},
+        )
+
+    events = _parse_log_events(caplog)
+    vram_start = next((e for e in events if e["event"] == "phase_vram_wait_start"), None)
+    assert vram_start is not None
+    assert vram_start["free_mb"] == 16000
+    assert vram_start["required_mb"] == 12000
+
+
+def test_gpu_busy_response_includes_held_seconds():
+    lock = InMemoryGPULock()
+    config = ArbiterConfig(
+        gpu=GPUConfig(index=0),
+        models={
+            "aiark/z-image-turbo": ModelConfig(
+                route="/v1/images/generations",
+                upstream="http://image-api:8003",
+                required_vram_mb=0,
+            )
+        },
+    )
+    client = TestClient(create_app(config, gpu_lock=lock, vram_probe=StaticVRAMProbe(16000)))
+
+    with lock.acquire("other-model"):
+        response = client.post(
+            "/v1/images/generations",
+            json={"model": "aiark/z-image-turbo", "prompt": "a robot"},
+        )
+
+    assert response.status_code == 409
+    error = response.json()["error"]
+    assert error["type"] == "gpu_busy"
+    assert "held_seconds" in error
+    assert error["held_seconds"] is not None
+
+
+@respx.mock
+def test_upstream_not_ready_response_includes_waited_seconds(caplog):
+    respx.get("http://image-api:8003/health").mock(return_value=Response(503))
+
+    config = ArbiterConfig(
+        gpu=GPUConfig(index=0),
+        models={
+            "aiark/z-image-turbo": ModelConfig(
+                route="/v1/images/generations",
+                upstream="http://image-api:8003",
+                required_vram_mb=0,
+                health=HealthConfig(
+                    url="http://image-api:8003/health",
+                    wait_timeout_seconds=0.01,
+                    poll_interval_seconds=0.001,
+                ),
+            )
+        },
+    )
+    client = TestClient(create_app(config, gpu_lock=InMemoryGPULock(), vram_probe=StaticVRAMProbe(16000)))
+
+    response = client.post(
+        "/v1/images/generations",
+        json={"model": "aiark/z-image-turbo", "prompt": "a robot"},
+    )
+
+    assert response.status_code == 503
+    error = response.json()["error"]
+    assert error["type"] == "upstream_not_ready"
+    assert "waited_seconds" in error
