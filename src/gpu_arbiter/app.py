@@ -26,6 +26,10 @@ from gpu_arbiter.vram import InsufficientVRAMError, StaticVRAMProbe, wait_for_vr
 LOGGER = logging.getLogger("gpu_arbiter")
 
 
+class ClientDisconnectedError(Exception):
+    pass
+
+
 @asynccontextmanager
 async def _optional_timeout(seconds: float | None):
     if seconds is None:
@@ -41,6 +45,38 @@ def _log_event(event: str, **fields: object) -> None:
 
 def _elapsed_ms(t0: float) -> int:
     return round((time.perf_counter() - t0) * 1000)
+
+
+async def _proxy_with_disconnect_check(
+    proxy_coro: Awaitable[Response],
+    disconnect_fn: Callable[[], Awaitable[bool]],
+    poll_interval: float = 1.0,
+) -> Response:
+    import anyio
+
+    result: Response | None = None
+    disconnected = False
+
+    async def _run_proxy() -> None:
+        nonlocal result
+        result = await proxy_coro
+        tg.cancel_scope.cancel()
+
+    async def _poll_disconnect() -> None:
+        nonlocal disconnected
+        while not await disconnect_fn():
+            await anyio.sleep(poll_interval)
+        disconnected = True
+        tg.cancel_scope.cancel()
+
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(_run_proxy)
+        tg.start_soon(_poll_disconnect)
+
+    if disconnected:
+        raise ClientDisconnectedError()
+    assert result is not None
+    return result
 
 
 def _request_id(request: Request) -> str:
@@ -65,6 +101,7 @@ def create_app(
     worker_poll_interval: float = 1.0,
     task_ttl_seconds: float = 3600.0,
     cleanup_interval_seconds: float = 300.0,
+    disconnect_poll_interval: float = 1.0,
 ) -> FastAPI:
     lock = gpu_lock or InMemoryGPULock()
     probe = vram_probe or StaticVRAMProbe(free_mb=0)
@@ -316,7 +353,11 @@ def create_app(
                         _log_event("phase_health_ready", request_id=request_id, elapsed_ms=_elapsed_ms(t0))
 
                     _log_event("phase_proxy_start", request_id=request_id)
-                    response = await _proxy_request(model, route, request, body)
+                    response = await _proxy_with_disconnect_check(
+                        _proxy_request(model, route, request, body),
+                        request.is_disconnected,
+                        poll_interval=disconnect_poll_interval,
+                    )
                     _log_event("phase_proxy_done", request_id=request_id, status_code=response.status_code, elapsed_ms=_elapsed_ms(t0))
 
                     if config.gpu.cooldown_seconds:
@@ -342,6 +383,9 @@ def create_app(
                     held_seconds=lock.held_seconds,
                 ),
             )
+        except ClientDisconnectedError:
+            _log_event("client_disconnected", request_id=request_id, route=route, model_id=model_id)
+            return Response(status_code=499)
         except TimeoutError:
             _log_event(
                 "request_timeout",

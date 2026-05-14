@@ -1,11 +1,12 @@
 import json
 import logging
 
+import pytest
 import respx
 from fastapi.testclient import TestClient
 from httpx import Response
 
-from gpu_arbiter.app import create_app
+from gpu_arbiter.app import ClientDisconnectedError, _proxy_with_disconnect_check, create_app
 from gpu_arbiter.config import ArbiterConfig, GPUConfig, HealthConfig, HookConfig, ModelConfig
 from gpu_arbiter.locking import InMemoryGPULock
 from gpu_arbiter.vram import StaticVRAMProbe
@@ -404,6 +405,123 @@ def test_cleanup_hooks_run_after_proxy_timeout():
     response = client.post("/v1/images/generations", json={"model": "aiark/z-image-turbo", "prompt": "test"})
 
     assert response.status_code == 504
+    assert "cleanup" in calls
+
+
+async def test_proxy_with_disconnect_check_raises_on_disconnect():
+    import anyio
+
+    async def immediately_disconnected():
+        return True
+
+    async def slow_proxy():
+        await anyio.sleep(5)
+
+    with pytest.raises(ClientDisconnectedError):
+        await _proxy_with_disconnect_check(slow_proxy(), immediately_disconnected, poll_interval=0.01)
+
+
+async def test_proxy_with_disconnect_check_returns_response_when_proxy_finishes_first():
+    from starlette.responses import Response as StarletteResponse
+
+    async def not_disconnected():
+        return False
+
+    async def fast_proxy():
+        return StarletteResponse(content=b'{"ok": true}', status_code=200)
+
+    result = await _proxy_with_disconnect_check(fast_proxy(), not_disconnected, poll_interval=0.01)
+    assert result.status_code == 200
+
+
+@respx.mock
+def test_client_disconnect_returns_499_and_releases_lock(monkeypatch):
+    import anyio
+
+    poll_count = 0
+
+    async def mock_is_disconnected(self):
+        nonlocal poll_count
+        poll_count += 1
+        return poll_count >= 3
+
+    import starlette.requests
+    monkeypatch.setattr(starlette.requests.Request, "is_disconnected", mock_is_disconnected)
+
+    async def slow_upstream(request):
+        await anyio.sleep(5)
+        return Response(200, json={"ok": True})
+
+    respx.post("http://tts-api:8002/v1/audio/speech").mock(side_effect=slow_upstream)
+
+    config = ArbiterConfig(
+        gpu=GPUConfig(index=0),
+        models={
+            "aiark/qwen3-tts-1.7b-base": ModelConfig(
+                route="/v1/audio/speech",
+                upstream="http://tts-api:8002",
+                required_vram_mb=0,
+            )
+        },
+    )
+    lock = InMemoryGPULock()
+    client = TestClient(
+        create_app(config, gpu_lock=lock, vram_probe=StaticVRAMProbe(16000), disconnect_poll_interval=0.01)
+    )
+
+    response = client.post("/v1/audio/speech", json={"model": "aiark/qwen3-tts-1.7b-base", "text": "hello"})
+
+    assert response.status_code == 499
+    assert lock.holder is None
+
+
+@respx.mock
+def test_client_disconnect_runs_cleanup_hooks(monkeypatch):
+    import anyio
+
+    calls = []
+    poll_count = 0
+
+    async def mock_is_disconnected(self):
+        nonlocal poll_count
+        poll_count += 1
+        return poll_count >= 3
+
+    import starlette.requests
+    monkeypatch.setattr(starlette.requests.Request, "is_disconnected", mock_is_disconnected)
+
+    async def slow_upstream(request):
+        await anyio.sleep(5)
+        return Response(200, json={"ok": True})
+
+    respx.post("http://tts-api:8002/v1/audio/speech").mock(side_effect=slow_upstream)
+    respx.post("http://tts-api:8002/admin/unload").mock(return_value=Response(200, json={"ok": True}))
+
+    def record_cleanup(request):
+        calls.append("cleanup")
+        return Response(200, json={"ok": True})
+
+    respx.post("http://tts-api:8002/admin/unload").mock(side_effect=record_cleanup)
+
+    config = ArbiterConfig(
+        gpu=GPUConfig(index=0),
+        models={
+            "aiark/qwen3-tts-1.7b-base": ModelConfig(
+                route="/v1/audio/speech",
+                upstream="http://tts-api:8002",
+                required_vram_mb=0,
+                cleanup=HookConfig(type="http", url="http://tts-api:8002/admin/unload"),
+            )
+        },
+    )
+    lock = InMemoryGPULock()
+    client = TestClient(
+        create_app(config, gpu_lock=lock, vram_probe=StaticVRAMProbe(16000), disconnect_poll_interval=0.01)
+    )
+
+    response = client.post("/v1/audio/speech", json={"model": "aiark/qwen3-tts-1.7b-base", "text": "hello"})
+
+    assert response.status_code == 499
     assert "cleanup" in calls
 
 
